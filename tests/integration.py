@@ -63,7 +63,11 @@ class RunningServer:
         config.write_text(json.dumps(self.config))
         self.log_path = root / 'server.log'
         self.output = self.log_path.open('w')
-        self.process = subprocess.Popen([SERVER, str(config)], stdout=self.output, stderr=subprocess.STDOUT)
+        self.process = subprocess.Popen(
+            [SERVER, str(config)],
+            stdout=self.output,
+            stderr=subprocess.STDOUT,
+        )
         deadline = time.monotonic() + 8
         try:
             while time.monotonic() < deadline:
@@ -111,7 +115,8 @@ class RunningServer:
             self.events = [json.loads(line) for line in output.splitlines() if line.startswith('{')]
             assert result == 0, output
             assert '"event":"stopped"' in output, output
-            assert 'AddressSanitizer' not in output and 'runtime error:' not in output, output
+            assert 'AddressSanitizer' not in output, output
+            assert 'runtime error:' not in output, output
         finally:
             self.output.close()
             self.temp.cleanup()

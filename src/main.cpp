@@ -1,28 +1,45 @@
 #include "gateway/server.hpp"
+
 #include "gateway/log.hpp"
+
+#include <iostream>
 #include <thread>
 #include <vector>
-#include <iostream>
+
 int main(int argc, char** argv) {
     spdlog::set_pattern("%v");
-    if (argc != 2) { std::cerr << "usage: gateway_server CONFIG.json\n"; return 2; }
+    if (argc != 2) {
+        std::cerr << "usage: gateway_server CONFIG.json\n";
+        return 2;
+    }
+
     try {
         const auto config = gateway::Config::load(argv[1]);
         boost::asio::io_context io;
         auto server = std::make_shared<gateway::Server>(io, config);
         server->start();
-        // jthread joins on scope exit, including partial thread-creation failure.
-        std::vector<std::jthread> threads;
+
+        // The main thread is also an I/O thread. jthread joins workers on scope exit,
+        // including when creating a later thread fails.
+        std::vector<std::jthread> io_threads;
         try {
-            for (std::size_t i = 1; i < config.io_threads; ++i)
-                threads.emplace_back([&io] { io.run(); });
+            for (std::size_t thread_index = 1; thread_index < config.io_threads; ++thread_index) {
+                io_threads.emplace_back([&io] {
+                    io.run();
+                });
+            }
+
             io.run();
-        } catch (...) { io.stop(); throw; }
-        threads.clear();
+        } catch (...) {
+            io.stop();
+            throw;
+        }
+
+        io_threads.clear();
         server->report_statistics();
         gateway::log({{"event", "stopped"}});
-    } catch (const std::exception& e) {
-        gateway::log({{"event", "fatal"}, {"error", e.what()}});
+    } catch (const std::exception& error) {
+        gateway::log({{"event", "fatal"}, {"error", error.what()}});
         return 1;
     }
 }

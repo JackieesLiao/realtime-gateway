@@ -18,7 +18,7 @@ flowchart LR
 ```
 
 - `FrameDecoder` 只理解长度和字节，不依赖 socket 或 protobuf。立即消费完整帧，只留下一个不完整帧；固定 4 KiB 网络读缓冲允许处理多帧和尾部半包。
-- `Session` 负责 TCP 生命周期、protobuf 编解码和 ACK 排队。收到一帧才进入业务；解析失败关闭连接，不传递部分 Request。
+- `Session` 负责 TCP 生命周期、protobuf 编解码和 ACK 排队。收到一帧才进入业务；解析失败关闭连接，不传递部分 Request。`read`/`write` 只启动异步操作，完成结果分别交给 `handle_read`/`handle_write`，避免把处理逻辑藏在多层 lambda 中。
 - `Router::route` 通过 switch 找到已实现的 TELEMETRY 处理分支，校验公共字段、更新统计，返回普通 protobuf Ack。只存在一个处理器时无需动态注册框架。
 - `Dispatcher::dispatch` 是 M1 的同步执行边界，没有投递和等待。任务等待容量为 **0**；没有线程池或异步业务队列。M2 再实现有界工作队列和跨线程 completion，避免本轮引入未使用的抽象。
 - `Config` 校验字段类型、范围和未知键，启动时失败优于带错配置运行。`Server` 管理监听、最大连接数和信号退出。

@@ -66,3 +66,31 @@ socket 测试发送不同片段，但不声称服务端 recv 实际按这些片�
 M1 没有业务线程、跨线程 completion、完整背压、全局预算、限流、心跳/半包超时或 ACK drain。这些不是未执行的 M1 测试，而是尚未实现的 M2 范围。WebSocket/gRPC、压力与性能数据、Docker 和 CI 同样留在后续阶段。
 
 本执行环境把空 `.git` 挂载为只读，普通 `git status` 因而提示不是 Git 仓库。未修改挂载或覆盖 `.git`；通过用户指定的 GitHub 仓库接口分批提交源代码与文档。该限制影响本地 Git 元数据，不影响 Linux 构建和真实 socket 验证。后续在普通 WSL 目录 clone 远端即可获得常规 Git 工作区。
+
+## 编辑器配置与可读性修订复验
+
+同日按新增的 AGENTS.md 整理代码，保留项目明确要求的 C++20。使用 `/usr/bin/g++ -std=c++17 -Iinclude -fsyntax-only src/frame.cpp` 可以重现 `std::span` 未声明以及 feed 签名的连锁错误；同一源文件使用 `-std=c++20` 语法检查通过。截图中的编辑器报错与此类配置问题一致，但本次无法直接读取 VS Code 窗口的实时诊断。
+
+新增 `.vscode/settings.json`，固定 Linux GCC/C++20，并读取 Debug 编译数据库和生成头文件。实际核对数据库内全部 8 条 C++ 编译命令均使用 `/usr/bin/g++` 和 `-std=c++20`；`build/debug/gateway.pb.h` 存在。编辑器缓存刷新方法见 README。
+
+新增 `.clang-format`，执行：
+
+```bash
+clang-format -i include/gateway/*.hpp src/*.cpp tests/unit.cpp
+clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/unit.cpp
+cmake --preset debug
+cmake --preset release
+cmake --preset asan
+cmake --build --preset debug
+cmake --build --preset release
+cmake --build --preset asan
+ctest --preset debug
+ctest --preset release
+ctest --preset asan
+```
+
+格式检查通过；对 18 个修改的源代码和配置文件检查，无 Tab、行长均不超过 100 列。展开控制流、函数和 lambda；分开成员声明和独立语句；明确帧解析状态变量名称；把异步读写及 accept 结果处理拆到命名函数，保留单读链、单写链和 buffer 捕获所有权。
+
+三个配置均重新构建成功，分别通过 13/13 GoogleTest 和 16/16 Python socket 用例；ASan/UBSan 未报告错误。未加入新阶段功能或性能指标。
+
+由于当前 `.git` 仍是只读空挂载，最终差异使用本轮修改前快照与 `git diff --no-index` 检查，重点检查了状态机、资源所有权、校验分支及回调调用顺序。GitHub 分别提交编辑器修复与可读性调整，未改写已有提交。

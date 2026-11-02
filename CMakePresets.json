@@ -1,18 +1,76 @@
 {
-  "version": 3,
-  "configurePresets": [
-    {"name": "debug", "generator": "Ninja", "binaryDir": "${sourceDir}/build/debug", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "/usr/bin/g++", "Protobuf_PROTOC_EXECUTABLE": "/usr/bin/protoc", "Python3_EXECUTABLE": "/usr/bin/python3"}},
-    {"name": "release", "inherits": "debug", "binaryDir": "${sourceDir}/build/release", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
-    {"name": "asan", "inherits": "debug", "binaryDir": "${sourceDir}/build/asan", "cacheVariables": {"GATEWAY_SANITIZERS": "ON"}}
-  ],
-  "buildPresets": [
-    {"name": "debug", "configurePreset": "debug", "jobs": 2},
-    {"name": "release", "configurePreset": "release", "jobs": 2},
-    {"name": "asan", "configurePreset": "asan", "jobs": 2}
-  ],
-  "testPresets": [
-    {"name": "debug", "configurePreset": "debug", "output": {"outputOnFailure": true}},
-    {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
-    {"name": "asan", "configurePreset": "asan", "output": {"outputOnFailure": true}, "environment": {"ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1", "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"}}
-  ]
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_COMPILER": "/usr/bin/g++",
+                "Protobuf_PROTOC_EXECUTABLE": "/usr/bin/protoc",
+                "Python3_EXECUTABLE": "/usr/bin/python3"
+            }
+        },
+        {
+            "name": "release",
+            "inherits": "debug",
+            "binaryDir": "${sourceDir}/build/release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "asan",
+            "inherits": "debug",
+            "binaryDir": "${sourceDir}/build/asan",
+            "cacheVariables": {
+                "GATEWAY_SANITIZERS": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "jobs": 2
+        },
+        {
+            "name": "release",
+            "configurePreset": "release",
+            "jobs": 2
+        },
+        {
+            "name": "asan",
+            "configurePreset": "asan",
+            "jobs": 2
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "release",
+            "configurePreset": "release",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "asan",
+            "configurePreset": "asan",
+            "output": {
+                "outputOnFailure": true
+            },
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+                "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+            }
+        }
+    ]
 }

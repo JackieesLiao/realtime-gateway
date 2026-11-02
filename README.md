@@ -70,6 +70,21 @@ ctest --preset asan
 
 ASan preset 同时启用 AddressSanitizer、UndefinedBehaviorSanitizer 和 leak 检查，使用非 PIE 的测试可执行文件以固定地址布局。系统 apt 动态库未重新用 sanitizer 编译。测试失败会返回非零；不会因 socket 权限不足而静默跳过。受限执行环境若不允许创建 loopback socket，需要允许本地 socket 后重新运行集成测试。真实命令及结果见 [M1 验证记录](docs/validation-m1.md)。
 
+## VS Code 编辑器与代码风格
+
+在 VS Code 的 WSL 窗口中打开仓库，C/C++ 扩展使用仓库内的 `.vscode/settings.json`：Linux `/usr/bin/g++`、C++20 和 `build/debug/compile_commands.json`。先执行 `cmake --preset debug` 和 `cmake --build --preset debug`，生成编译数据库及 protobuf 头文件。
+
+`std::span` 和 `std::jthread` 需要 C++20。若编辑器按 C++17 解析，`feed` 的声明会先解析失败，随后可能把参数 `bytes`、`consume` 标记为未定义；不要通过声明同名全局变量绕过。项目明确要求 C++20，符合 AGENTS.md 中“项目另有指定时遵循项目”的约定。
+
+若构建通过但仍显示旧红线，运行命令面板里的 `C/C++: Reset IntelliSense Database`，必要时再执行 `Developer: Reload Window`。可用 `C/C++: Log Diagnostics` 检查实际编译器、C++ 标准和编译数据库路径；不要选用 Windows 的 MSVC 配置。当前自动化验证覆盖编译数据库和编译结果，无法直接读取用户窗口的实时诊断。
+
+仓库 `.clang-format` 对应 AGENTS.md：4 空格、100 列、控制流加花括号、展开单行函数和 lambda。使用已安装的 clang-format 18.1.3 格式化手写 C++ 文件，不格式化 build 下的生成文件：
+
+```bash
+clang-format -i include/gateway/*.hpp src/*.cpp tests/unit.cpp
+clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/unit.cpp
+```
+
 ## 配置与边界
 
 配置文件是 JSON 对象，字段可省略并使用默认值；未知键、负数、小数或越界值启动失败。示例见 [config/gateway.json](config/gateway.json)。
