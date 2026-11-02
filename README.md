@@ -1,6 +1,6 @@
 # realtime-gateway
 
-C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。当前交付 **M1**：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
+C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。已完成 **M1** 最小链路及 **M2.1** 接收暂停/恢复基础：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
 
 本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。WebSocket、gRPC、工作线程池、完整背压和性能实验尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
 
@@ -81,8 +81,8 @@ ASan preset 同时启用 AddressSanitizer、UndefinedBehaviorSanitizer 和 leak 
 仓库 `.clang-format` 对应 AGENTS.md：4 空格、100 列、控制流加花括号、展开单行函数和 lambda。使用已安装的 clang-format 18.1.3 格式化手写 C++ 文件，不格式化 build 下的生成文件：
 
 ```bash
-clang-format -i include/gateway/*.hpp src/*.cpp tests/unit.cpp
-clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/unit.cpp
+clang-format -i include/gateway/*.hpp src/*.cpp tests/*.cpp
+clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/*.cpp
 ```
 
 ## 配置与边界
@@ -111,7 +111,9 @@ M1 的业务只做轻量内存处理，Dispatcher 在连接 strand 同步调用 
 - [架构、线程、消息流与生命周期](docs/architecture.md)
 - [线协议、ACK 和错误策略](docs/protocol.md)
 - [M1 验证记录与用例对应](docs/validation-m1.md)
+- [M2.1 变更范围与阅读路径](docs/changes-m2.1.md)
+- [M2.1 验证记录](docs/validation-m2.1.md)
 
-优先阅读 `FrameDecoder::feed`（src/frame.cpp）、`Session::handle_body` 和 `Session::write`（src/server.cpp）。分别理解长度安全与半包状态、ACK 的业务边界、唯一写链与 buffer 生命周期。
+当前接收路径优先阅读 `FrameDecoder::feed`（src/frame.cpp）、`BufferedInput::process`（src/buffered_input.cpp）和 `Session::process_buffered_input`（src/server.cpp）。分别理解单帧消费量、暂停后的帧与尾部保留、何时恢复解析及发起新读。业务和发送路径仍可继续阅读 `Session::handle_body` 与 `Session::write`。
 
-当前没有 WebSocket/gRPC、业务线程池、全局预算、高低水位、限流、心跳/半包超时、graceful drain、压测或 Docker/CI。这里只输出完成数、拒绝数、payload 字节数；尚未采集吞吐或延迟，不提供未经测量的性能数字。
+M2.1 只提供内部暂停/恢复入口，当前同步业务不会主动触发资源背压。尚未实现 WebSocket/gRPC、业务线程池、全局预算、高低水位、限流、心跳/半包超时、graceful drain、压测或 Docker/CI。这里只输出完成数、拒绝数、payload 字节数；尚未采集吞吐或延迟，不提供未经测量的性能数字。

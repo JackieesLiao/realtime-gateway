@@ -12,6 +12,7 @@ std::string encode_frame(const std::string& body) {
     }
 
     const auto body_length = static_cast<std::uint32_t>(body.size());
+    // 创建一个包含 4 个零字节的字符串，先为包头留位置：frame：00 00 00 00。
     std::string frame(4, '\0');
 
     for (unsigned byte_index = 0; byte_index < 4; ++byte_index) {
@@ -27,12 +28,19 @@ FrameDecoder::FrameDecoder(std::size_t max_body_bytes, std::size_t receive_body_
     : max_body_bytes_(max_body_bytes), receive_body_capacity_(receive_body_capacity) {
 }
 
-bool FrameDecoder::feed(std::span<const char> remaining_bytes, const Consumer& consume_body) {
+DecodeResult FrameDecoder::feed(std::span<const char> remaining_bytes) {
     if (!error_.empty()) {
-        return false;
+        return {0, DecodeStatus::Error};
     }
 
+    // 尚未取走的帧不能被新输入覆盖，也不能重复消费后面的字节。
+    if (has_frame()) {
+        return {0, DecodeStatus::FrameReady};
+    }
+
+    const auto input_size = remaining_bytes.size();
     while (!remaining_bytes.empty()) {
+        // 先处理包头还没收齐的情况，进度保存在成员中供下次 feed 继续。
         if (header_bytes_received_ < header_.size()) {
             header_[header_bytes_received_] = static_cast<unsigned char>(remaining_bytes.front());
             ++header_bytes_received_;
@@ -47,7 +55,7 @@ bool FrameDecoder::feed(std::span<const char> remaining_bytes, const Consumer& c
                 body_length = (body_length << 8) | header_byte;
             }
 
-            // Validate both limits before reserving memory, even for a header of 0xffffffff.
+            // 必须先校验再分配；0xffffffff 这样的声明不会触发消息体分配。
             if (body_length == 0) {
                 error_ = "empty_frame";
             } else if (body_length > max_body_bytes_) {
@@ -57,7 +65,7 @@ bool FrameDecoder::feed(std::span<const char> remaining_bytes, const Consumer& c
             }
 
             if (!error_.empty()) {
-                return false;
+                return {input_size - remaining_bytes.size(), DecodeStatus::Error};
             }
 
             expected_body_bytes_ = body_length;
@@ -69,20 +77,38 @@ bool FrameDecoder::feed(std::span<const char> remaining_bytes, const Consumer& c
         body_.append(remaining_bytes.data(), bytes_to_copy);
         remaining_bytes = remaining_bytes.subspan(bytes_to_copy);
 
-        if (body_.size() == expected_body_bytes_) {
-            // The consumer may close the connection. Never process the next frame after that.
-            const bool continue_decoding = consume_body(body_);
-            body_.clear();
-            header_bytes_received_ = 0;
-            expected_body_bytes_ = 0;
-
-            if (!continue_decoding) {
-                return false;
-            }
+        if (has_frame()) {
+            // 不清空消息体、不处理下一帧，消费量告诉 Session 从哪里恢复。
+            return {input_size - remaining_bytes.size(), DecodeStatus::FrameReady};
         }
     }
 
-    return true;
+    return {input_size, DecodeStatus::NeedMore};
+}
+
+bool FrameDecoder::has_frame() const {
+    return error_.empty() && expected_body_bytes_ != 0 && body_.size() == expected_body_bytes_;
+}
+
+const std::string& FrameDecoder::body() const {
+    if (!has_frame()) {
+        throw std::logic_error("no complete frame available");
+    }
+
+    return body_;
+}
+
+std::string FrameDecoder::take_body() {
+    if (!has_frame()) {
+        throw std::logic_error("cannot take an incomplete frame");
+    }
+
+    // swap 转移消息体的存储所有权；后续解析不会修改已经交出的消息体。
+    std::string completed_body;
+    completed_body.swap(body_);
+    header_bytes_received_ = 0;
+    expected_body_bytes_ = 0;
+    return completed_body;
 }
 
 } // namespace gateway

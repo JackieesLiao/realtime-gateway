@@ -35,6 +35,7 @@ target_link_libraries(gateway_proto PUBLIC protobuf::libprotobuf)
 
 add_library(gateway_core
     src/frame.cpp
+    src/buffered_input.cpp
     src/config.cpp
     src/business.cpp
     src/server.cpp
@@ -69,7 +70,10 @@ if(BUILD_TESTING)
         )
     endif()
 
-    add_executable(gateway_tests tests/unit.cpp)
+    add_executable(gateway_tests
+        tests/unit.cpp
+        tests/buffered_input_test.cpp
+    )
     target_link_libraries(gateway_tests PRIVATE gateway_core GTest::gtest_main)
     add_test(NAME unit COMMAND gateway_tests)
 

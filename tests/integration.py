@@ -206,6 +206,15 @@ class TcpIntegration(unittest.TestCase):
                 sock.sendall(request(8))
                 ack(sock, 8)
 
+    def test_body_spanning_multiple_read_buffers(self):
+        # 验证固定读缓冲可复用；不假设系统实际拆成几次 recv。
+        with RunningServer() as server, server.connect() as sock:
+            sock.sendall(request(31, payload=b'x' * 12000) + request(32))
+            ack(sock, 31)
+            ack(sock, 32)
+            sock.sendall(request(33))
+            ack(sock, 33)
+
     def test_frame_limit_boundary(self):
         body = pb.Request(request_id=88, device_id='r', message_type=pb.TELEMETRY,
                           payload=b'x' * 128).SerializeToString()

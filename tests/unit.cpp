@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -16,103 +17,174 @@ TEST(Frame, EveryTwoPartSplit) {
     const auto wire = encode_frame("telemetry-body");
     for (std::size_t split = 0; split <= wire.size(); ++split) {
         FrameDecoder decoder(64, 64);
-        std::vector<std::string> bodies;
+        const auto first = decoder.feed(std::span(wire).first(split));
+        EXPECT_EQ(first.consumed_bytes, split);
 
-        const auto consume = [&](const auto& body) {
-            bodies.push_back(body);
-            return true;
-        };
-        EXPECT_TRUE(decoder.feed(std::span(wire).first(split), consume));
-        EXPECT_TRUE(decoder.feed(std::span(wire).subspan(split), consume));
-        EXPECT_EQ(bodies, std::vector<std::string>{"telemetry-body"}) << split;
+        if (split == wire.size()) {
+            ASSERT_EQ(first.status, DecodeStatus::FrameReady);
+            EXPECT_EQ(decoder.take_body(), "telemetry-body");
+            const auto empty = decoder.feed({});
+            EXPECT_EQ(empty.status, DecodeStatus::NeedMore);
+            EXPECT_EQ(empty.consumed_bytes, 0U);
+        } else {
+            ASSERT_EQ(first.status, DecodeStatus::NeedMore);
+            const auto second = decoder.feed(std::span(wire).subspan(split));
+            EXPECT_EQ(second.consumed_bytes, wire.size() - split);
+            ASSERT_EQ(second.status, DecodeStatus::FrameReady);
+            EXPECT_EQ(decoder.take_body(), "telemetry-body");
+        }
+
+        EXPECT_FALSE(decoder.has_frame());
     }
 }
 
 TEST(Frame, ByteByByte) {
     const auto wire = encode_frame("abcdef");
     FrameDecoder decoder(64, 64);
-    int count = 0;
-    for (const auto& byte : wire) {
-        ASSERT_TRUE(decoder.feed({&byte, 1}, [&](const auto& body) {
-            EXPECT_EQ(body, "abcdef");
-            ++count;
-            return true;
-        }));
+    for (std::size_t index = 0; index < wire.size(); ++index) {
+        const auto result = decoder.feed(std::span(wire).subspan(index, 1));
+        EXPECT_EQ(result.consumed_bytes, 1U);
+        if (index + 1 == wire.size()) {
+            EXPECT_EQ(result.status, DecodeStatus::FrameReady);
+        } else {
+            EXPECT_EQ(result.status, DecodeStatus::NeedMore);
+            EXPECT_FALSE(decoder.has_frame());
+        }
     }
-    EXPECT_EQ(count, 1);
+
+    EXPECT_EQ(decoder.take_body(), "abcdef");
 }
 
 TEST(Frame, MultipleFramesAndIncompleteTail) {
+    const auto first_wire = encode_frame("first");
+    const auto second_wire = encode_frame("second");
     const auto tail = encode_frame("third");
-    const auto wire = encode_frame("first") + encode_frame("second") + tail.substr(0, 6);
+    const auto wire = first_wire + second_wire + tail.substr(0, 6);
     FrameDecoder decoder(64, 64);
-    std::vector<std::string> bodies;
 
-    const auto consume = [&](const auto& body) {
-        bodies.push_back(body);
-        return true;
-    };
+    // 即使一次传入多帧，消费量也严格停在当前帧边界。
+    const auto first = decoder.feed(wire);
+    ASSERT_EQ(first.status, DecodeStatus::FrameReady);
+    EXPECT_EQ(first.consumed_bytes, first_wire.size());
+    EXPECT_EQ(decoder.take_body(), "first");
 
-    ASSERT_TRUE(decoder.feed(wire, consume));
-    EXPECT_EQ(bodies, (std::vector<std::string>{"first", "second"}));
+    const auto second = decoder.feed(std::span(wire).subspan(first.consumed_bytes));
+    ASSERT_EQ(second.status, DecodeStatus::FrameReady);
+    EXPECT_EQ(second.consumed_bytes, second_wire.size());
+    EXPECT_EQ(decoder.take_body(), "second");
+
+    const auto consumed = first.consumed_bytes + second.consumed_bytes;
+    const auto partial = decoder.feed(std::span(wire).subspan(consumed));
+    EXPECT_EQ(partial.status, DecodeStatus::NeedMore);
+    EXPECT_EQ(partial.consumed_bytes, 6U);
     EXPECT_EQ(decoder.buffered_body_bytes(), 2U);
 
-    ASSERT_TRUE(decoder.feed(std::span(tail).subspan(6), consume));
-    EXPECT_EQ(bodies.back(), "third");
-    EXPECT_EQ(bodies.size(), 3U);
+    const auto completed = decoder.feed(std::span(tail).subspan(6));
+    ASSERT_EQ(completed.status, DecodeStatus::FrameReady);
+    EXPECT_EQ(completed.consumed_bytes, tail.size() - 6);
+    EXPECT_EQ(decoder.take_body(), "third");
 }
 
 TEST(Frame, RejectsOversizeBeforeAllocatingBody) {
     FrameDecoder decoder(1048576, 1048576);
     const auto capacity = decoder.allocated_body_capacity();
-    const std::string header(4, static_cast<char>(0xff));
-    EXPECT_FALSE(decoder.feed(header, [](const auto&) {
-        ADD_FAILURE();
-        return true;
-    }));
+    const auto wire = std::string(4, static_cast<char>(0xff)) + "unconsumed";
+    const auto result = decoder.feed(wire);
+
+    EXPECT_EQ(result.status, DecodeStatus::Error);
+    EXPECT_EQ(result.consumed_bytes, 4U);
     EXPECT_EQ(decoder.error(), "frame_too_large");
     EXPECT_EQ(decoder.buffered_body_bytes(), 0U);
     EXPECT_EQ(decoder.allocated_body_capacity(), capacity);
-    EXPECT_FALSE(decoder.feed("anything", [](const auto&) {
-        return true;
-    }));
+    EXPECT_FALSE(decoder.has_frame());
+
+    const auto retry = decoder.feed("anything");
+    EXPECT_EQ(retry.status, DecodeStatus::Error);
+    EXPECT_EQ(retry.consumed_bytes, 0U);
 }
 
 TEST(Frame, RejectsReceiveCapacityBeforeAllocatingBody) {
     FrameDecoder decoder(64, 8);
     const auto capacity = decoder.allocated_body_capacity();
     const auto wire = encode_frame(std::string(9, 'x'));
-    EXPECT_FALSE(decoder.feed(wire, [](const auto&) {
-        ADD_FAILURE();
-        return true;
-    }));
+    const auto result = decoder.feed(wire);
+
+    EXPECT_EQ(result.status, DecodeStatus::Error);
+    EXPECT_EQ(result.consumed_bytes, 4U);
     EXPECT_EQ(decoder.error(), "receive_capacity");
     EXPECT_EQ(decoder.allocated_body_capacity(), capacity);
 }
 
 TEST(Frame, ExactReceiveAndFrameBoundary) {
     FrameDecoder decoder(8, 8);
-    EXPECT_TRUE(decoder.feed(encode_frame("12345678"), [](const auto& body) {
-        EXPECT_EQ(body.size(), 8U);
-        return true;
-    }));
+    const auto wire = encode_frame("12345678");
+    const auto result = decoder.feed(wire);
+
+    ASSERT_EQ(result.status, DecodeStatus::FrameReady);
+    EXPECT_EQ(result.consumed_bytes, wire.size());
+    EXPECT_EQ(decoder.take_body(), "12345678");
 }
 
-TEST(Frame, EmptyFrameAndConsumerStop) {
-    FrameDecoder empty(8, 8);
-    EXPECT_FALSE(empty.feed(std::string(4, '\0'), [](const auto&) {
-        ADD_FAILURE();
-        return true;
-    }));
-    EXPECT_EQ(empty.error(), "empty_frame");
+TEST(Frame, EmptyFrameIsTerminalError) {
+    FrameDecoder decoder(8, 8);
+    const auto result = decoder.feed(std::string(4, '\0'));
 
-    FrameDecoder stopped(8, 8);
-    int count = 0;
-    EXPECT_FALSE(stopped.feed(encode_frame("a") + encode_frame("b"), [&](const auto&) {
-        ++count;
-        return false;
-    }));
-    EXPECT_EQ(count, 1);
+    EXPECT_EQ(result.status, DecodeStatus::Error);
+    EXPECT_EQ(result.consumed_bytes, 4U);
+    EXPECT_EQ(decoder.error(), "empty_frame");
+    EXPECT_THROW(decoder.body(), std::logic_error);
+    EXPECT_THROW(decoder.take_body(), std::logic_error);
+}
+
+TEST(Frame, ReadyFrameRemainsUntilTaken) {
+    FrameDecoder decoder(64, 64);
+    const auto first = encode_frame("first");
+    const auto second = encode_frame("second");
+    ASSERT_EQ(decoder.feed(first).status, DecodeStatus::FrameReady);
+
+    // 暂停时新输入和空输入都不能覆盖尚未取走的完整帧。
+    for (const auto input : {std::span<const char>(second), std::span<const char>()}) {
+        const auto result = decoder.feed(input);
+        EXPECT_EQ(result.status, DecodeStatus::FrameReady);
+        EXPECT_EQ(result.consumed_bytes, 0U);
+        EXPECT_EQ(decoder.body(), "first");
+    }
+
+    const auto owned_body = decoder.take_body();
+    EXPECT_FALSE(decoder.has_frame());
+    EXPECT_EQ(decoder.buffered_body_bytes(), 0U);
+    ASSERT_EQ(decoder.feed(second).status, DecodeStatus::FrameReady);
+    EXPECT_EQ(decoder.take_body(), "second");
+    EXPECT_EQ(owned_body, "first");
+}
+
+TEST(Frame, EmptyInputPreservesPartialHeader) {
+    FrameDecoder decoder(64, 64);
+    const auto empty = decoder.feed({});
+    EXPECT_EQ(empty.status, DecodeStatus::NeedMore);
+    EXPECT_EQ(empty.consumed_bytes, 0U);
+
+    const auto wire = encode_frame("hello");
+    const auto partial = decoder.feed(std::span(wire).first(2));
+    EXPECT_EQ(partial.status, DecodeStatus::NeedMore);
+    EXPECT_EQ(partial.consumed_bytes, 2U);
+    EXPECT_EQ(decoder.feed({}).status, DecodeStatus::NeedMore);
+
+    ASSERT_EQ(decoder.feed(std::span(wire).subspan(2)).status, DecodeStatus::FrameReady);
+    EXPECT_EQ(decoder.take_body(), "hello");
+}
+
+TEST(Frame, TakingPartialBodyFailsWithoutDiscardingIt) {
+    FrameDecoder decoder(64, 64);
+    const auto wire = encode_frame("hello");
+    ASSERT_EQ(decoder.feed(std::span(wire).first(6)).status, DecodeStatus::NeedMore);
+    EXPECT_EQ(decoder.buffered_body_bytes(), 2U);
+    EXPECT_THROW(decoder.body(), std::logic_error);
+    EXPECT_THROW(decoder.take_body(), std::logic_error);
+    EXPECT_EQ(decoder.buffered_body_bytes(), 2U);
+
+    ASSERT_EQ(decoder.feed(std::span(wire).subspan(6)).status, DecodeStatus::FrameReady);
+    EXPECT_EQ(decoder.take_body(), "hello");
 }
 
 TEST(SendQueue, CountIncludesInFlightAndBudgetReturns) {

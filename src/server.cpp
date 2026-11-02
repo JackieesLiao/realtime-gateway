@@ -1,10 +1,9 @@
 #include "gateway/server.hpp"
 
-#include "gateway/frame.hpp"
+#include "gateway/buffered_input.hpp"
 #include "gateway/log.hpp"
 #include "gateway/send_queue.hpp"
 
-#include <array>
 #include <csignal>
 #include <functional>
 
@@ -22,7 +21,7 @@ public:
         std::uint64_t connection_id,
         std::function<void()> on_close)
         : socket_(std::move(socket)),
-          decoder_(config.max_body_bytes, config.max_receive_body_bytes),
+          input_(config.max_body_bytes, config.max_receive_body_bytes),
           sends_(config.max_send_messages, config.max_send_bytes),
           dispatcher_(dispatcher),
           connection_id_(connection_id),
@@ -31,7 +30,7 @@ public:
 
     void start() {
         asio::dispatch(socket_.get_executor(), [self = shared_from_this()] {
-            self->read();
+            self->process_buffered_input();
         });
     }
 
@@ -41,19 +40,37 @@ public:
         });
     }
 
+    // M2.1：为后续异步业务提供控制入口，不等待业务线程，也不取消在途读。
+    void pause_reading() {
+        asio::dispatch(socket_.get_executor(), [self = shared_from_this()] {
+            self->reading_paused_ = true;
+        });
+    }
+
+    void resume_reading() {
+        asio::dispatch(socket_.get_executor(), [self = shared_from_this()] {
+            self->reading_paused_ = false;
+            self->process_buffered_input();
+        });
+    }
+
 private:
     void read() {
-        if (closed_) {
+        if (closed_ || reading_paused_ || read_in_progress_ || !input_.can_read()) {
             return;
         }
 
-        socket_.async_read_some(asio::buffer(read_buffer_),
+        // 固定缓冲的所有权持续到读回调；旧输入未消费完时绝不覆盖它。
+        const auto buffer = input_.writable_buffer();
+        read_in_progress_ = true;
+        socket_.async_read_some(asio::buffer(buffer.data(), buffer.size()),
             [self = shared_from_this()](Error error, std::size_t bytes_received) {
                 self->handle_read(error, bytes_received);
             });
     }
 
     void handle_read(Error error, std::size_t bytes_received) {
+        read_in_progress_ = false;
         if (closed_) {
             return;
         }
@@ -67,22 +84,37 @@ private:
             return;
         }
 
-        const std::span<const char> received_bytes(read_buffer_.data(), bytes_received);
-        const bool decoding_succeeded =
-            decoder_.feed(received_bytes, [this](const std::string& body) {
-                return handle_body(body);
-            });
+        // 即使暂停已经设置，在途读返回的数据也先保存在固定缓冲中。
+        input_.commit_read(bytes_received);
+        process_buffered_input();
+    }
 
-        if (!decoding_succeeded) {
-            // A consumer rejection may already have closed this connection.
-            if (!closed_) {
-                close(decoder_.error());
-            }
+    void process_buffered_input() {
+        // 读操作持有可写缓冲时不能同时解析它；恢复请求等读回调继续推进。
+        if (closed_ || read_in_progress_ || reading_paused_) {
             return;
         }
 
-        // Start another read only after every complete buffered frame has been consumed.
-        read();
+        const auto status = input_.process([this](const std::string& body) {
+            if (reading_paused_) {
+                return FrameDisposition::Paused;
+            }
+            if (!handle_body(body)) {
+                return FrameDisposition::Stopped;
+            }
+
+            return FrameDisposition::Accepted;
+        });
+
+        if (status == InputStatus::Error) {
+            close(input_.error());
+            return;
+        }
+
+        // 只有旧帧和原始尾部都已处理完，才允许启动下一条读操作。
+        if (status == InputStatus::NeedRead) {
+            read();
+        }
     }
 
     bool handle_body(const std::string& body) {
@@ -147,6 +179,7 @@ private:
             return;
         }
         closed_ = true;
+        input_.stop();
 
         Error ignored_error;
         socket_.cancel(ignored_error);
@@ -162,14 +195,15 @@ private:
 
     // Every member below is accessed on the socket's dedicated connection strand.
     tcp::socket socket_;
-    std::array<char, 4096> read_buffer_{};
-    FrameDecoder decoder_;
+    BufferedInput input_;
     SendQueue sends_;
 
     // main keeps Server (and its Dispatcher) alive until all I/O callbacks have drained.
     Dispatcher& dispatcher_;
     std::uint64_t connection_id_;
     std::function<void()> on_close_;
+    bool read_in_progress_ = false;
+    bool reading_paused_ = false;
     bool closed_ = false;
 };
 
