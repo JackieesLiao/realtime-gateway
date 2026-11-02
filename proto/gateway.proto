@@ -2,22 +2,24 @@ syntax = "proto3";
 package realtime;
 
 enum MessageType {
-  MESSAGE_TYPE_UNSPECIFIED = 0;
-  TELEMETRY = 1;
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+    TELEMETRY = 1;
 }
 message Request {
-  uint64 request_id = 1;
-  string device_id = 2;
-  MessageType message_type = 3;
-  bytes payload = 4;
+    uint64 request_id = 1;
+    string device_id = 2;
+    MessageType message_type = 3;
+    bytes payload = 4;
 }
 enum Result {
-  OK = 0;
-  INVALID_REQUEST = 1;
-  UNKNOWN_MESSAGE_TYPE = 2;
+    OK = 0;
+    INVALID_REQUEST = 1;
+    UNKNOWN_MESSAGE_TYPE = 2;
+    // 业务处理器异常；原有结果编号不变，ACK 仍携带请求的 request_id。
+    INTERNAL_ERROR = 3;
 }
 message Ack {
-  uint64 request_id = 1;
-  Result result = 2;
-  string error = 3;
+    uint64 request_id = 1;
+    Result result = 2;
+    string error = 3;
 }

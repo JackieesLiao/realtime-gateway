@@ -1,10 +1,15 @@
 {
-  "listen_address": "127.0.0.1",
-  "port": 9000,
-  "io_threads": 2,
-  "max_connections": 1024,
-  "max_body_bytes": 1048576,
-  "max_receive_body_bytes": 1048576,
-  "max_send_messages": 64,
-  "max_send_bytes": 262144
+    "listen_address": "127.0.0.1",
+    "port": 9000,
+    "io_threads": 2,
+    "max_connections": 1024,
+    "max_body_bytes": 1048576,
+    "max_receive_body_bytes": 1048576,
+    "max_send_messages": 64,
+    "max_send_bytes": 262144,
+    "business_threads": 2,
+    "max_business_queue_messages": 128,
+    "max_business_queue_bytes": 8388608,
+    "max_business_outstanding_messages": 256,
+    "max_business_outstanding_bytes": 16777216
 }

@@ -32,10 +32,13 @@ int main(int argc, char** argv) {
             io.run();
         } catch (...) {
             io.stop();
+            // 异常退出也要先回收业务线程，不能让它们向已销毁的 io_context 回送。
+            server->join_workers();
             throw;
         }
 
         io_threads.clear();
+        server->join_workers();
         server->report_statistics();
         gateway::log({{"event", "stopped"}});
     } catch (const std::exception& error) {

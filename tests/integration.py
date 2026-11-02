@@ -115,6 +115,9 @@ class RunningServer:
             self.events = [json.loads(line) for line in output.splitlines() if line.startswith('{')]
             assert result == 0, output
             assert '"event":"stopped"' in output, output
+            stats = next(event for event in self.events if event['event'] == 'statistics')
+            assert stats['business_outstanding'] == 0, output
+            assert stats['business_outstanding_bytes'] == 0, output
             assert 'AddressSanitizer' not in output, output
             assert 'runtime error:' not in output, output
         finally:
@@ -214,6 +217,24 @@ class TcpIntegration(unittest.TestCase):
             ack(sock, 32)
             sock.sendall(request(33))
             ack(sock, 33)
+
+    def test_business_byte_capacity_rejects_without_processing(self):
+        # 单请求必然超过此容量，拒绝路径不依赖线程调度或网络分包。
+        with RunningServer(max_business_outstanding_bytes=1) as server:
+            with server.connect() as sock:
+                sock.sendall(request(71))
+                closed(sock)
+                server.wait_reason('business_capacity')
+        stats = next(event for event in server.events if event['event'] == 'statistics')
+        self.assertEqual(stats['processed'], 0)
+        self.assertEqual(stats['business_outstanding'], 0)
+        self.assertEqual(stats['business_outstanding_bytes'], 0)
+
+    def test_async_pipeline_with_multiple_io_and_business_threads(self):
+        with RunningServer(io_threads=4, business_threads=4) as server, server.connect() as sock:
+            sock.sendall(b''.join(request(rid) for rid in range(1, 21)))
+            for rid in range(1, 21):
+                ack(sock, rid)
 
     def test_frame_limit_boundary(self):
         body = pb.Request(request_id=88, device_id='r', message_type=pb.TELEMETRY,

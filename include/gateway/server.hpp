@@ -2,6 +2,7 @@
 
 #include "gateway/business.hpp"
 #include "gateway/config.hpp"
+#include "gateway/dispatcher.hpp"
 
 #include <memory>
 #include <unordered_map>
@@ -15,11 +16,15 @@ class Session;
 
 class Server : public std::enable_shared_from_this<Server> {
 public:
-    Server(boost::asio::io_context& io, Config config);
+    // 可注入处理器用于复用/确定性测试；默认仍由 Router 处理业务。
+    Server(boost::asio::io_context& io, Config config, Dispatcher::Handler handler = {});
 
     void start();
     void stop();
     void report_statistics() const;
+    void join_workers();
+    std::uint16_t port() const;
+    TaskQueueSnapshot business_snapshot() const;
 
 private:
     void accept();
@@ -35,7 +40,9 @@ private:
 
     Config config_;
     Statistics stats_;
+    Router router_;
     Dispatcher dispatcher_;
+    std::uint16_t port_ = 0;
     std::unordered_map<std::uint64_t, std::shared_ptr<Session>> sessions_;
     std::uint64_t next_id_ = 1;
     bool stopped_ = false;

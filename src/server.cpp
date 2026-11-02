@@ -13,6 +13,20 @@ namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 using Error = boost::system::error_code;
 
+namespace {
+
+Dispatcher::Handler make_business_handler(Router& router, Dispatcher::Handler handler) {
+    if (handler) {
+        return handler;
+    }
+
+    return [&router](const realtime::Request& request) {
+        return router.route(request);
+    };
+}
+
+} // namespace
+
 class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(tcp::socket socket,
@@ -56,7 +70,8 @@ public:
 
 private:
     void read() {
-        if (closed_ || reading_paused_ || read_in_progress_ || !input_.can_read()) {
+        if (closed_ || business_in_progress_ || reading_paused_ || read_in_progress_ ||
+            !input_.can_read()) {
             return;
         }
 
@@ -91,12 +106,12 @@ private:
 
     void process_buffered_input() {
         // 读操作持有可写缓冲时不能同时解析它；恢复请求等读回调继续推进。
-        if (closed_ || read_in_progress_ || reading_paused_) {
+        if (closed_ || read_in_progress_ || reading_paused_ || business_in_progress_) {
             return;
         }
 
         const auto status = input_.process([this](const std::string& body) {
-            if (reading_paused_) {
+            if (reading_paused_ || business_in_progress_) {
                 return FrameDisposition::Paused;
             }
             if (!handle_body(body)) {
@@ -118,29 +133,72 @@ private:
     }
 
     bool handle_body(const std::string& body) {
-        realtime::Request request;
-        if (!request.ParseFromArray(body.data(), static_cast<int>(body.size()))) {
+        auto request = std::make_unique<realtime::Request>();
+        if (!request->ParseFromArray(body.data(), static_cast<int>(body.size()))) {
             close("invalid_protobuf");
             return false;
         }
 
-        // Create the ACK only after business validation and counter updates complete.
-        const auto ack = dispatcher_.dispatch(request);
+        const auto status = dispatcher_.try_submit(request, make_completion());
+        if (status == SubmitStatus::Full) {
+            close("business_capacity");
+            return false;
+        }
+        if (status == SubmitStatus::Stopping) {
+            close("dispatcher_stopping");
+            return false;
+        }
+
+        // 同连接只有一个待处理业务；后续完整帧/尾部由 M2.1 输入状态保留。
+        business_in_progress_ = true;
+        pause_reading();
+        return true;
+    }
+
+    BusinessCompletion make_completion() {
+        // 完成回调只弱引用连接；工作线程不访问任何 Session 成员。
+        // guard 保证连接关闭后，io_context 仍能接收并丢弃迟到结果。
+        const auto executor = socket_.get_executor();
+        return [weak_session = weak_from_this(), executor, work = asio::make_work_guard(executor)](
+                   BusinessResult result) mutable {
+            asio::post(executor,
+                [weak_session, work = std::move(work), result = std::move(result)]() mutable {
+                    if (auto session = weak_session.lock()) {
+                        session->handle_business_result(std::move(result));
+                    }
+                    // 弱引用失效时，result 析构同样归还总在途预算。
+                });
+        };
+    }
+
+    void handle_business_result(BusinessResult result) {
+        // 这里只能运行在连接 strand。关闭后的结果直接丢弃，不再发送 ACK。
+        if (closed_) {
+            return;
+        }
+
+        business_in_progress_ = false;
         log({{"event", "business_result"},
             {"connection_id", connection_id_},
-            {"request_id", request.request_id()},
-            {"result", realtime::Result_Name(ack.result())}});
+            {"request_id", result.ack.request_id()},
+            {"result", realtime::Result_Name(result.ack.result())}});
 
-        const auto ack_body = ack.SerializeAsString();
-        auto frame = std::make_shared<const std::string>(encode_frame(ack_body));
+        const bool queued = enqueue_ack(result.ack);
+        // 必须先归还旧请求凭证再恢复，否则容量为 1 时会拒绝自己的下一条请求。
+        result.ticket.release();
+        if (queued) {
+            resume_reading();
+        }
+    }
+
+    bool enqueue_ack(const realtime::Ack& ack) {
+        auto frame = std::make_shared<const std::string>(encode_frame(ack.SerializeAsString()));
         const bool write_chain_idle = sends_.empty();
-
         if (!sends_.push(std::move(frame))) {
             close("send_capacity");
             return false;
         }
 
-        // Otherwise the active write's completion callback will send this frame.
         if (write_chain_idle) {
             write();
         }
@@ -202,23 +260,28 @@ private:
     Dispatcher& dispatcher_;
     std::uint64_t connection_id_;
     std::function<void()> on_close_;
+    bool business_in_progress_ = false;
     bool read_in_progress_ = false;
     bool reading_paused_ = false;
     bool closed_ = false;
 };
 
-Server::Server(asio::io_context& io, Config config)
+Server::Server(asio::io_context& io, Config config, Dispatcher::Handler handler)
     : io_(io),
       strand_(asio::make_strand(io)),
       acceptor_(strand_),
       signals_(strand_, SIGINT, SIGTERM),
       config_(std::move(config)),
-      dispatcher_(stats_) {
+      router_(stats_),
+      dispatcher_(config_.business_threads,
+          config_.business_queue,
+          make_business_handler(router_, std::move(handler))) {
     const tcp::endpoint endpoint(asio::ip::make_address(config_.listen_address), config_.port);
     acceptor_.open(endpoint.protocol());
     acceptor_.set_option(tcp::acceptor::reuse_address(true));
     acceptor_.bind(endpoint);
     acceptor_.listen();
+    port_ = acceptor_.local_endpoint().port();
 }
 
 void Server::start() {
@@ -231,7 +294,7 @@ void Server::start() {
 
         log({{"event", "listening"},
             {"address", self->config_.listen_address},
-            {"port", self->acceptor_.local_endpoint().port()},
+            {"port", self->port_},
             {"io_threads", self->config_.io_threads}});
         self->accept();
     });
@@ -285,10 +348,29 @@ void Server::handle_accept(Error error, const std::shared_ptr<tcp::socket>& sock
 }
 
 void Server::report_statistics() const {
+    const auto business = dispatcher_.snapshot();
     log({{"event", "statistics"},
         {"processed", stats_.processed.load()},
         {"rejected", stats_.rejected.load()},
-        {"payload_bytes", stats_.payload_bytes.load()}});
+        {"payload_bytes", stats_.payload_bytes.load()},
+        {"business_queued", business.queued_messages},
+        {"business_outstanding", business.outstanding_messages},
+        {"business_outstanding_bytes", business.outstanding_bytes},
+        {"business_failed", dispatcher_.failed_tasks()},
+        {"completion_failed", dispatcher_.failed_completions()}});
+}
+
+void Server::join_workers() {
+    dispatcher_.stop();
+    dispatcher_.join();
+}
+
+std::uint16_t Server::port() const {
+    return port_;
+}
+
+TaskQueueSnapshot Server::business_snapshot() const {
+    return dispatcher_.snapshot();
 }
 
 void Server::stop() {
@@ -306,6 +388,8 @@ void Server::stop() {
             session->stop();
         }
 
+        // M2.2 仍立即取消连接和未执行任务；不在 I/O 回调内 join。
+        self->dispatcher_.stop();
         log({{"event", "stop_requested"}});
     });
 }

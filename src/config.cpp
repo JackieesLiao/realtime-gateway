@@ -46,6 +46,21 @@ Config Config::load(const std::string& path) {
         } else if (key == "max_connections") {
             require_range(1, 100000);
             config.max_connections = numeric_value;
+        } else if (key == "business_threads") {
+            require_range(1, 64);
+            config.business_threads = numeric_value;
+        } else if (key == "max_business_queue_messages") {
+            require_range(1, 65536);
+            config.business_queue.queued_messages = numeric_value;
+        } else if (key == "max_business_queue_bytes") {
+            require_range(1, 256 * 1024 * 1024);
+            config.business_queue.queued_bytes = numeric_value;
+        } else if (key == "max_business_outstanding_messages") {
+            require_range(1, 65536);
+            config.business_queue.outstanding_messages = numeric_value;
+        } else if (key == "max_business_outstanding_bytes") {
+            require_range(1, 256 * 1024 * 1024);
+            config.business_queue.outstanding_bytes = numeric_value;
         } else if (key == "max_body_bytes") {
             require_range(1, 16 * 1024 * 1024);
             config.max_body_bytes = numeric_value;

@@ -7,9 +7,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(GATEWAY_SANITIZERS "Enable ASan and UBSan" OFF)
+option(GATEWAY_TSAN "Enable ThreadSanitizer separately" OFF)
+if(GATEWAY_SANITIZERS AND GATEWAY_TSAN)
+    message(FATAL_ERROR "TSan and ASan/UBSan require separate build directories")
+endif()
 if(GATEWAY_SANITIZERS)
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie)
     add_link_options(-fsanitize=address,undefined -no-pie)
+endif()
+if(GATEWAY_TSAN)
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -fno-pie)
+    add_link_options(-fsanitize=thread -no-pie)
 endif()
 
 find_package(Boost 1.74 REQUIRED COMPONENTS system)
@@ -38,6 +46,8 @@ add_library(gateway_core
     src/buffered_input.cpp
     src/config.cpp
     src/business.cpp
+    src/bounded_task_queue.cpp
+    src/dispatcher.cpp
     src/server.cpp
 )
 target_include_directories(gateway_core PUBLIC include)
@@ -73,9 +83,16 @@ if(BUILD_TESTING)
     add_executable(gateway_tests
         tests/unit.cpp
         tests/buffered_input_test.cpp
+        tests/dispatcher_test.cpp
     )
     target_link_libraries(gateway_tests PRIVATE gateway_core GTest::gtest_main)
     add_test(NAME unit COMMAND gateway_tests)
+    set_tests_properties(unit PROPERTIES TIMEOUT 30)
+
+    add_executable(gateway_async_tests tests/async_server_test.cpp)
+    target_link_libraries(gateway_async_tests PRIVATE gateway_core GTest::gtest_main)
+    add_test(NAME async_server_integration COMMAND gateway_async_tests)
+    set_tests_properties(async_server_integration PROPERTIES TIMEOUT 40)
 
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/python")
     add_custom_command(

@@ -1,8 +1,8 @@
 # realtime-gateway
 
-C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。已完成 **M1** 最小链路及 **M2.1** 接收暂停/恢复基础：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
+C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。已完成 **M1、M2.1 和 M2.2**：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
 
-本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。WebSocket、gRPC、工作线程池、完整背压和性能实验尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
+本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。WebSocket、gRPC、收发全局预算、高低水位和性能实验尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
 
 ## Linux 依赖
 
@@ -68,7 +68,23 @@ cmake --build --preset asan
 ctest --preset asan
 ```
 
-ASan preset 同时启用 AddressSanitizer、UndefinedBehaviorSanitizer 和 leak 检查，使用非 PIE 的测试可执行文件以固定地址布局。系统 apt 动态库未重新用 sanitizer 编译。测试失败会返回非零；不会因 socket 权限不足而静默跳过。受限执行环境若不允许创建 loopback socket，需要允许本地 socket 后重新运行集成测试。真实命令及结果见 [M1 验证记录](docs/validation-m1.md)。
+ASan preset 同时启用 AddressSanitizer、UndefinedBehaviorSanitizer 和 leak 检查，使用非 PIE 的测试可执行文件以固定地址布局。系统 apt 动态库未重新用 sanitizer 编译。测试失败会返回非零；不会因 socket 权限不足而静默跳过。受限执行环境若不允许创建 loopback socket，需要允许本地 socket 后重新运行集成测试。最新真实命令及结果见 [M2.2 验证记录](docs/validation-m2.2.md)。
+
+TSan 使用单独目录，不能与 ASan 同时启用：
+
+```bash
+cmake --preset tsan
+cmake --build --preset tsan
+ctest --preset tsan
+```
+
+本次 WSL2/GCC 13 环境直接运行 TSan 遇到 unexpected memory mapping。以下命令只对测试进程关闭 ASLR，实际已通过，不修改系统配置：
+
+```bash
+setarch x86_64 -R ctest --preset tsan
+```
+
+CTest 包含普通 GoogleTest、带可控处理器的 C++ socket 测试和 Python socket 测试。C++ 处理器注入用于确定性控制业务执行，不增加生产延迟配置；所有网络测试只绑定 loopback。sanitizer 的实际可执行性和限制见验证记录。
 
 ## VS Code 编辑器与代码风格
 
@@ -95,25 +111,32 @@ clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/*.cpp
 | port | 9000 | 0..65535；0 让系统分配端口，日志报告实际值 |
 | io_threads | 2 | 1..64，一个 io_context，包括主线程 |
 | max_connections | 1024 | 1..100000；超过立即拒绝新连接 |
+| business_threads | 2 | 1..64，额外的业务执行线程 |
+| max_business_queue_messages | 128 | 1..65536，仅排队任务 |
+| max_business_queue_bytes | 8388608 | 1..268435456，仅排队请求的序列化字节 |
+| max_business_outstanding_messages | 256 | 1..65536，排队/执行/等待回送总数 |
+| max_business_outstanding_bytes | 16777216 | 1..268435456，总在途请求的序列化字节 |
 | max_body_bytes | 1048576 | 1..16777216，不含 4 字节包头 |
 | max_receive_body_bytes | 1048576 | 1..16777216，单连接待完成消息体上限 |
 | max_send_messages | 64 | 1..65536，含正在写的帧 |
 | max_send_bytes | 262144 | 1..67108864，含帧头和正在写的帧 |
 
-M1 不暂停/恢复读，接收或发送容量超限就关闭连接。两个 body 限制中较小者生效。应用内数据内容有界，RSS 仍包含容器分配、protobuf、日志和内核开销；没有全局字节预算。请按内存和连接数设置容量。
+业务 Accepted 后，同连接暂停后续投递和新读，结果回到 strand 后恢复已有输入。业务队列/总在途容量不足时关闭连接；发送容量超限仍关闭。两个 body 限制中较小者生效。业务预算以 Request::ByteSizeLong() 计费，不含 TCP 包头，也不等于 RSS；接收、发送和业务统一的全局预算留到 M2.3。
 
 ## 关键设计
 
 Transport 独占帧解析和网络对象；业务 Router/Dispatcher 只接受 protobuf 类型。每个 socket 使用自己的 strand，保证一个读链和一个写链；发送 buffer 由写回调独立持有，取消连接后仍活到操作完成。ACK 在业务校验与计数完成后才创建，但不表示持久化，断连时也不保证 ACK 送达。
 
-M1 的业务只做轻量内存处理，Dispatcher 在连接 strand 同步调用 Router，业务等待队列容量为 0。加入耗时业务前，按 M2 实现独立、有容量限制的工作队列和结果回送，不能直接在回调中等待或改用无界 post。
+Dispatcher 使用显式有界队列和固定 worker 执行 Router，完成结果 post 回原连接 strand。总在途预算覆盖排队、执行和等待 I/O 消费的结果，防止把无界积压转移到完成回调。每连接最多一个业务在途，不跨线程访问连接成员；停止后在控制线程 join，不在 I/O 回调里等待 worker。
 
 - [架构、线程、消息流与生命周期](docs/architecture.md)
 - [线协议、ACK 和错误策略](docs/protocol.md)
 - [M1 验证记录与用例对应](docs/validation-m1.md)
 - [M2.1 变更范围与阅读路径](docs/changes-m2.1.md)
 - [M2.1 验证记录](docs/validation-m2.1.md)
+- [M2.2 变更范围与阅读路径](docs/changes-m2.2.md)
+- [M2.2 验证记录](docs/validation-m2.2.md)
 
-当前接收路径优先阅读 `FrameDecoder::feed`（src/frame.cpp）、`BufferedInput::process`（src/buffered_input.cpp）和 `Session::process_buffered_input`（src/server.cpp）。分别理解单帧消费量、暂停后的帧与尾部保留、何时恢复解析及发起新读。业务和发送路径仍可继续阅读 `Session::handle_body` 与 `Session::write`。
+当前异步业务路径优先阅读 BoundedTaskQueue::try_push（src/bounded_task_queue.cpp）、Dispatcher::run_worker（src/dispatcher.cpp）和 Session::handle_business_result（src/server.cpp）。分别理解容量准入、锁外执行与凭证回送、ACK 排队和恢复顺序；接收基础继续阅读 FrameDecoder 和 BufferedInput。
 
-M2.1 只提供内部暂停/恢复入口，当前同步业务不会主动触发资源背压。尚未实现 WebSocket/gRPC、业务线程池、全局预算、高低水位、限流、心跳/半包超时、graceful drain、压测或 Docker/CI。这里只输出完成数、拒绝数、payload 字节数；尚未采集吞吐或延迟，不提供未经测量的性能数字。
+M2.2 已接入真实异步业务暂停与恢复，但资源不足仍关闭连接。当前退出丢弃排队任务并关闭连接，不承诺排空 ACK；执行中 Handler 必须有限时返回。高低水位、统一全局预算、限流、心跳/半包超时和 graceful drain 仍在后续步骤；没有压测或 Docker/CI，也没有未经测量的性能数字。

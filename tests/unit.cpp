@@ -231,8 +231,8 @@ static realtime::Request valid_request() {
 
 TEST(Business, AckAfterCountersAndCorrelation) {
     Statistics stats;
-    Dispatcher dispatcher(stats);
-    auto ack = dispatcher.dispatch(valid_request());
+    Router router(stats);
+    auto ack = router.route(valid_request());
     EXPECT_EQ(ack.request_id(), 42U);
     EXPECT_EQ(ack.result(), realtime::OK);
     EXPECT_EQ(stats.processed.load(), 1U);
@@ -241,21 +241,21 @@ TEST(Business, AckAfterCountersAndCorrelation) {
 
 TEST(Business, ValidationAndUnknownTypes) {
     Statistics stats;
-    Dispatcher dispatcher(stats);
+    Router router(stats);
     auto request = valid_request();
     request.set_message_type(static_cast<realtime::MessageType>(999));
-    EXPECT_EQ(dispatcher.dispatch(request).result(), realtime::UNKNOWN_MESSAGE_TYPE);
+    EXPECT_EQ(router.route(request).result(), realtime::UNKNOWN_MESSAGE_TYPE);
 
     request.set_device_id(std::string(129, 'x'));
-    EXPECT_EQ(dispatcher.dispatch(request).result(), realtime::INVALID_REQUEST);
+    EXPECT_EQ(router.route(request).result(), realtime::INVALID_REQUEST);
 
     request = valid_request();
     request.clear_request_id();
-    EXPECT_EQ(dispatcher.dispatch(request).result(), realtime::INVALID_REQUEST);
+    EXPECT_EQ(router.route(request).result(), realtime::INVALID_REQUEST);
 
     request = valid_request();
     request.clear_payload();
-    EXPECT_EQ(dispatcher.dispatch(request).result(), realtime::INVALID_REQUEST);
+    EXPECT_EQ(router.route(request).result(), realtime::INVALID_REQUEST);
 
     EXPECT_EQ(stats.rejected.load(), 4U);
     EXPECT_EQ(stats.processed.load(), 0U);
@@ -276,6 +276,9 @@ TEST(Config, RejectsUnsafeSettingsAndTypos) {
         "{\"max_send_bytes\":0}",
         "{\"typo\":1}",
         "{\"io_threads\":1.5}",
+        "{\"business_threads\":0}",
+        "{\"max_business_queue_bytes\":0}",
+        "{\"max_business_outstanding_messages\":0}",
     };
 
     for (const auto& document : invalid_configs) {

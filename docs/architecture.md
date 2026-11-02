@@ -1,86 +1,93 @@
-# 架构与阅读指南（M1 + M2.1）
+# 架构与阅读指南（M1 + M2.1 + M2.2）
 
-本仓库是学习和面试演示用的独立重建版本。当前实现 TCP 最小链路及可暂停接收的状态基础；WebSocket、gRPC、业务工作线程和性能实验见 ROADMAP。没有持久化，也没有重试或去重。
+当前实现 TCP、可暂停输入状态、有界业务执行与连接 strand 结果回送。全局收发预算、高低水位、超时、优雅 drain 和其他传输协议仍见 ROADMAP；没有持久化、自动重试或去重。
 
-## 模块与消息流
+## 模块和消息流
 
 ```mermaid
 flowchart LR
-    D[device_client / Python socket] -->|length + Request| S[Session / TCP]
-    S --> F[FrameDecoder]
-    F --> P[protobuf Request]
-    P --> X[Dispatcher: M1 同步调用]
-    X --> R[Router: message_type]
-    R --> B[遥测校验与原子计数]
-    B --> A[Ack]
-    A --> Q[SendQueue]
-    Q -->|单条 async_write 链| D
+    C[设备客户端] -->|length + Request| S[Session strand]
+    S --> I[BufferedInput / FrameDecoder]
+    I -->|完整帧 + protobuf 解析| Q[Dispatcher / 有界队列]
+    Q --> W[固定业务线程]
+    W --> R[Router 校验与原子统计]
+    R -->|Ack + TaskTicket| P[post 到原连接 strand]
+    P --> A[有界 SendQueue]
+    A -->|单条 async_write 链| C
 ```
 
-- `FrameDecoder` 只理解长度和字节，不依赖 socket 或 protobuf。每次 feed 最多产出一帧，返回本次消费量和 NeedMore/FrameReady/Error；完整帧保留到 take_body。
-- `BufferedInput` 是 Session 持有的输入状态，保存固定 4 KiB 读缓冲、未消费区间和解码器。process 先尝试交付完整帧，再解析原始尾部；消费者返回 Paused 时保持状态，下次 process 从原位置继续。
-- `Session` 负责 TCP 生命周期、protobuf 编解码和 ACK 排队。收到一帧才进入业务；解析失败关闭连接，不传递部分 Request。`read`/`write` 只启动异步操作，完成结果分别交给 `handle_read`/`handle_write`，避免把处理逻辑藏在多层 lambda 中。
-- `Router::route` 通过 switch 找到已实现的 TELEMETRY 处理分支，校验公共字段、更新统计，返回普通 protobuf Ack。只存在一个处理器时无需动态注册框架。
-- `Dispatcher::dispatch` 是 M1 的同步执行边界，没有投递和等待。任务等待容量为 **0**；没有线程池或异步业务队列。M2 再实现有界工作队列和跨线程 completion，避免本轮引入未使用的抽象。
-- `Config` 校验字段类型、范围和未知键，启动时失败优于带错配置运行。`Server` 管理监听、最大连接数和信号退出。
+- FrameDecoder 每次最多产出一帧，返回消费量和 NeedMore/FrameReady/Error；完整帧保留到 take_body。
+- BufferedInput 是 Session 持有的输入状态，保存 4 KiB 固定读块、未消费偏移和解码器。消费者返回 Paused 时保留完整帧和原始尾部。
+- Session 负责 socket 生命周期、protobuf 解析、任务准入和 ACK 编码。解析后的 Request 自己拥有数据，不把 body 引用交给 worker。
+- Router 只依赖 Request/Ack 和 Statistics；校验公共字段后按 message_type 处理。统计使用原子自增，支持多个 worker 同时调用。
+- Dispatcher 管理固定数量的 jthread，通过 BoundedTaskQueue 接受任务。Handler 和完成回调均在队列锁外执行，业务核心不包含 Asio 或 socket 类型。
+- Config 校验配置类型/范围；Server 管理连接表、信号和业务线程生命周期。
 
-业务核心只依赖生成的 Request/Ack 和统计对象，不依赖 Asio socket、Beast 或 gRPC 类型。当前业务是受帧长限制的校验和计数，适合内联；加入数据库、文件或耗时计算前必须先完成 M2。
+M1 的同步 Dispatcher 接口已经移除。同步业务单测直接验证 Router；异步投递使用 dispatcher.hpp 中的 try_submit。
 
-## 线程与串行性
+## 线程关系和串行性
 
-一个 `io_context` 由 `io_threads` 个 Linux 线程运行，主线程也调用 `run()`。线程不是每连接固定绑定的；strand 保证同一连接的回调不会并发执行，而不是保证运行于同一个 OS 线程。
+一个 io_context 由 io_threads 个线程运行，包括主线程；business_threads 是额外的业务线程。strand 保证同连接回调不并发，不保证固定运行于某个 OS 线程。
 
-- Server 的 acceptor、signal_set、连接表只在管理 strand 使用。
-- 每个新 socket 在创建时就使用独立 strand 作为 executor。start/stop 用 `dispatch(socket.get_executor(), ...)` 进入它；读写完成回调使用 socket 的 executor，因此连接成员无须加锁。
-- 每个连接只有一个 `async_read_some` 链。read_in_progress_ 防止重复启动和在途缓冲被解析；只有 BufferedInput 返回 NeedRead，且连接没有暂停，才启动下一次读。
-- 第一次入发送队列才启动 `async_write`；后续写只由前一次写完成回调启动。读写可以同时进行，多次写不能重叠。
-- 多连接会同时更新 Statistics，用 relaxed 原子自增。计数不用于发布其他共享状态；退出时所有线程 join 后输出最终统计。
+Server 的 acceptor、signal_set、连接表属于管理 strand；每个 socket 使用独立连接 strand。BufferedInput、业务在途标志、读写链和发送队列都只在连接 strand 操作。
 
-M1 没有业务线程，因此没有跨线程业务结果。M2 的 completion 必须 `post` 回原连接 strand，不能从工作线程修改发送队列。
+每连接最多有一个业务任务处于排队、执行或等待完成回送的状态。任务 Accepted 后暂停读取，BufferedInput 可保留下一完整帧和原始尾部；工作线程返回结果后，strand 先排队 ACK、归还旧任务凭证，再恢复已有输入。这保持同连接的处理/ACK 顺序，不需要结果重排缓存；不同连接可并行业务处理。
 
-## 容量与失败策略
+read_in_progress_ 防止读缓冲被在途操作和解析器同时使用。只在旧输入处理完、没有待接管完整帧、业务不在途且未暂停时启动新读。写链仍由首次入队和上一写完成回调驱动，不能重叠启动多个 async_write。
 
-| 资源 | M1 限制与处理 |
+## 排队预算与总在途预算
+
+业务容量有两层，均同时限制消息数和字节数：
+
+| 层次 | 覆盖范围 | 归还时机 |
+| --- | --- | --- |
+| queued | 等待 worker 取走的任务 | wait_pop 取走，或 stop 丢弃 |
+| outstanding | 排队 + 执行 + 尚未消费/丢弃的完成结果 | TaskTicket 释放 |
+
+字节成本是 Request::ByteSizeLong()，不含 TCP 包头。它衡量序列化请求数据，不是精确 RSS。容器节点、protobuf 对象、回调和 ACK 还存在开销；任务数量上限同时限制这些对象的个数。生产 Router 只返回固定、较短的错误信息；任意新增 Handler 必须自行限制输出，M2.3 再加入输出空间预留。
+
+仅限制排队任务是不够的：worker 可能很快取走任务并持续 post 结果，使 io_context 积累结果。TaskTicket 因此从排队任务移动到 BusinessResult，并跟随结果跨线程回送；即使队列已空，结果尚未消费时也不能接受超过 outstanding 上限的新任务。
+
+try_submit 只进入短的 mutex 临界区，不等待空位或业务完成，不宣称是 lock-free。所有准入检查在同一临界区，只有 Accepted 才移动调用方的 unique_ptr<Request>；Full/Stopping 时请求仍归调用方。worker 在 condition_variable 上等待，不在 I/O 回调里等待。
+
+## 完成结果和生命周期
+
+Worker 执行 Handler，捕获业务异常并返回同 request_id 的 INTERNAL_ERROR。Request 在调用完成回调前销毁，TaskTicket 仍保留预算；完成回调意外抛错会被计数，worker 继续处理后续任务，但该次回送不再保证 ACK。
+
+Session::make_completion 提供传输适配：只捕获连接 weak_ptr、原 executor 和 work guard。工作线程调用它后，结果 post 回连接 strand；工作线程不访问 Session。关闭或已销毁的连接丢弃结果，凭证仍通过 RAII 归还。guard 防止最后一个 socket 关闭后 io_context 提前退出，遗漏迟到回送。
+
+业务返回不等于 ACK 已送达。handle_business_result 先编码和排队 ACK，再释放业务凭证；发送队列的容量继续单独计费。释放凭证必须先于恢复输入，否则 outstanding_messages=1 时，同连接的下一条请求会被自己的旧任务挡住。
+
+异步读回调持有 shared_ptr<Session>，保持 BufferedInput 的存储有效；写回调额外持有发送帧，即使 close 清空队列，在途写缓冲仍活到取消完成。close 幂等，标记输入停止、取消/关闭 socket，再向管理 strand 投递连接删除。
+
+## 资源边界与失败
+
+| 资源 | 当前限制和行为 |
 | --- | --- |
-| 网络读缓冲 | 每连接固定 4096 字节，最多一条读链 |
-| 帧消息体 | 长度必须 >0 且不超过 max_body_bytes（默认 1 MiB） |
-| 接收解析器 | 一份不完整或待接管的完整消息体；声明超过 max_receive_body_bytes 就在 reserve/append 前关闭 |
-| 发送队列 | 同时检查 max_send_messages 和 max_send_bytes；含包头、含当前在途写；超限关闭 |
-| 连接 | max_connections；超限的新连接立即关闭 |
-| 业务等待任务 | 0，内联执行，无后台排队 |
+| 原始输入 | 每连接固定 4096 字节，一条读链 |
+| 解码消息体 | 最多一帧待组装或接管；合法长度校验后才分配 |
+| 业务排队 | queued 数量/字节限制 |
+| 总在途业务 | outstanding 数量/字节限制，包含完成回送 |
+| 单连接业务 | 最多一个，完成前暂停后续投递 |
+| 发送队列 | 数量/字节限制，含当前写；超限关闭 |
+| 连接数 | max_connections，超限拒绝新连接 |
 
-这些是应用数据内容的容量限制，不是 RSS 配额。`std::string` capacity、protobuf 解析对象、共享指针、队列节点、日志和内核 socket 缓冲还有开销；string 可能保留此前容量或按实现扩大分配。应用内存规模受连接数、接收容量和发送容量约束，但 M1 没有按消息/字节统一计费的全局预算。配置上限是保护措施，不代表把所有配置调到最大后仍适合本机内存。
+业务准入 Full 时当前关闭连接，reason=business_capacity；Stopping 时 reason=dispatcher_stopping。M2.3 再做资源释放唤醒和高低水位恢复。这里的业务总预算并不是接收、业务、结果和发送统一的全局预算。
 
-`feed` 校验完整包头后才调用 `reserve`，不会根据 0xffffffff 这样的未校验值分配。单测记录拒绝前后的 string capacity，检查容量没有增长，且消费者没有被调用。
+暂停不会取消已经发起的读；返回数据仍先保存。业务暂停期间不主动读取新的网络数据，因此对端 EOF 可能到恢复读或 ACK 写入时才被发现，不能把它解释为取消了后台业务。
 
-发送预算拒绝发生在业务完成后，因此业务计数可能已经增加，而设备收不到 ACK。M1 在超限时关闭，不实施高低水位暂停/恢复；慢读者可能断连。消息数量限制通过队列单测确定性覆盖；socket 测试将 max_send_bytes 设为 1，验证单 ACK 超限的真实关闭路径，不依赖内核缓冲何时填满。
+## 停止与线程回收
 
-## 生命周期与退出
+当前信号退出仍是有序取消：管理 strand 停止监听、取消信号等待，把各连接关闭投递到其 strand，并调用 Dispatcher::stop。队列 stop 丢弃尚未执行的任务、唤醒 worker；销毁任务必须在队列锁外，因为凭证析构也需要锁。
 
-异步读回调捕获 `shared_ptr<Session>`，Session 内 BufferedInput 的固定读缓冲因此存活到操作完成。每次写回调还捕获 `shared_ptr<const string>`：即使 close 清空发送队列，在途写的 buffer 仍然有效。这是取消操作中最容易遗漏的所有权。
+已经执行的业务继续完成，结果回送到关闭连接后被丢弃。每项任务的 work guard 让这些回调被执行；所有 I/O 工作消失后 run 返回，主线程 join I/O 和业务线程，最后输出统计。I/O 回调不调用 join。main 异常路径也先停止/回收 worker，避免向已经销毁的 io_context 回送。
 
-`Session::close` 在连接 strand 内检查 closed 标志，执行 cancel/shutdown/close、清空排队数据，然后向 Server strand post 删除连接表项。重复 close 和取消完成回调均安全返回；关闭不会把后续帧继续交给业务。回调只弱引用 Server，避免连接表形成循环所有权；main 保留 Server 直到所有 I/O 完成，Dispatcher 引用始终有效。
-
-SIGINT/SIGTERM 在管理 strand 中关闭监听和取消 signal_set，再把各连接的关闭投递到对应 strand。没有新增工作后，取消回调、连接删除回调全部执行，`io_context::run()` 自然返回，线程 join，输出统计和 stopped。正常路径不通过 `io.stop()` 跳过清理。
-
-M1 的退出是有序取消，不排空 ACK；不承诺所有已收到的消息都完成。也未创建心跳或超时定时器，因此本阶段没有连接级定时器需要取消。M2 再加入定时器取消和业务 drain 的退出期限。
-
-## M2.1 的暂停与恢复
-
-FrameDecoder 的 feed 不再调用业务。NeedMore 表示输入已消费且消息未收齐；FrameReady 返回当前帧边界的消费量，并保留 body；Error 是终止状态。FrameReady 时重复 feed 返回消费量 0，直到 take_body 转移数据并重置进度，不能用零消费量反复循环。
-
-BufferedInput::process 将完整帧借给消费者。Accepted 表示消费者已经处理完或拥有自己的数据副本，随后释放当前帧；Paused 保留消息体和输入偏移；Stopped 不再交付后续帧。消息体引用不能保存在异步任务中跨回调使用。
-
-例如一次读到 A/B/C，在 B 处暂停时，A 已处理，B 保存在解码器中，C 留在原始缓冲；恢复后重试 B，成功后处理 C。整个过程不需要重新接收，也不覆盖旧缓冲。
-
-Session::pause_reading 和 resume_reading 都进入连接 strand。暂停不取消已经启动的读；在途读完成后先 commit_read 保存返回数据，再等待恢复。resume_reading 进入统一 process_buffered_input 路径，已有帧和尾部未处理完时不会读新数据。close 只终止输入处理，不能提前销毁在途读所引用的存储。
-
-当前同步业务路径不主动触发暂停。确定性 gate 单测覆盖同一 BufferedInput 处理路径；完整业务队列与高低水位将在 M2.2/M2.3 接入。M2.1 没有新增工作线程、预算或定时器。
+当前没有 ACK drain 截止时间和执行中任务的协作取消，M2.5 再补齐。Handler 必须有限时返回；无法通过 jthread 安全强杀一个永久阻塞的业务函数。
 
 ## 优先阅读三个函数
 
-1. `FrameDecoder::feed`（src/frame.cpp）：按本次输入返回消费量，收齐一帧立即停下。
-2. `BufferedInput::process`（src/buffered_input.cpp）：完整帧接管、暂停保留、输入偏移与恢复顺序。
-3. `Session::process_buffered_input`（src/server.cpp）：连接 strand 内推进输入，只有 NeedRead 才允许启动新读。
+1. BoundedTaskQueue::try_push（src/bounded_task_queue.cpp）：四项准入检查，以及 Accepted 才转移所有权。
+2. Dispatcher::run_worker（src/dispatcher.cpp）：锁外执行业务、异常转 ACK、Request 销毁与凭证回送。
+3. Session::handle_business_result（src/server.cpp）：strand 内消费结果、排队 ACK、先释放再恢复。
 
-然后阅读 `FrameDecoder::take_body` 理解存储所有权交接，阅读 `Session::handle_body` 和 `Session::write` 理解业务完成边界与发送 buffer 生命周期。
+再结合 Session::make_completion 阅读 weak_ptr、executor 和 work guard，结合 TaskTicket::release 理解失败、丢弃和关闭后的预算归还。
