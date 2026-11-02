@@ -1,0 +1,10 @@
+{
+  "listen_address": "127.0.0.1",
+  "port": 9000,
+  "io_threads": 2,
+  "max_connections": 1024,
+  "max_body_bytes": 1048576,
+  "max_receive_body_bytes": 1048576,
+  "max_send_messages": 64,
+  "max_send_bytes": 262144
+}

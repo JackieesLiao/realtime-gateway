@@ -1,0 +1,23 @@
+syntax = "proto3";
+package realtime;
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  TELEMETRY = 1;
+}
+message Request {
+  uint64 request_id = 1;
+  string device_id = 2;
+  MessageType message_type = 3;
+  bytes payload = 4;
+}
+enum Result {
+  OK = 0;
+  INVALID_REQUEST = 1;
+  UNKNOWN_MESSAGE_TYPE = 2;
+}
+message Ack {
+  uint64 request_id = 1;
+  Result result = 2;
+  string error = 3;
+}
