@@ -203,10 +203,31 @@ public:
             io_thread_.join();
         }
         finished_ = true;
+        const auto budget = server_->budget_snapshot();
+        EXPECT_EQ(budget.total.messages, 0U);
+        EXPECT_EQ(budget.total.bytes, 0U);
+        EXPECT_EQ(budget.budget_waiters + budget.queue_waiters, 0U);
+        EXPECT_EQ(budget.pending_wakeups, 0U);
     }
 
     TaskQueueSnapshot snapshot() const {
         return server_->business_snapshot();
+    }
+
+    ResourceBudgetSnapshot budget_snapshot() const {
+        return server_->budget_snapshot();
+    }
+
+    // 观察生产状态并通过 I/O barrier 让事件推进，不靠 sleep 猜测分包或队列时序。
+    bool wait_for_budget(const std::function<bool(const ResourceBudgetSnapshot&)>& reached) {
+        const auto deadline = std::chrono::steady_clock::now() + 3s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (reached(budget_snapshot())) {
+                return true;
+            }
+            synchronize_io();
+        }
+        return false;
     }
 
 private:
@@ -329,4 +350,190 @@ TEST(AsyncServer, CloseBeforeCompletionDropsLateResultAndReturnsBudget) {
     EXPECT_EQ(server.snapshot().outstanding_messages, 0U);
     EXPECT_EQ(server.snapshot().outstanding_bytes, 0U);
     EXPECT_EQ(server.snapshot().executing_messages, 0U);
+}
+
+TEST(AsyncServer, QueueFullPausesAndRecoversWithoutDroppingAcceptedConnections) {
+    auto config = test_config();
+    config.business_threads = 1;
+    config.business_queue.queued_messages = 1;
+    auto gate = std::make_shared<BusinessGate>();
+    RunningServer server(
+        config,
+        [gate](const auto& request) {
+            return gate->execute(request);
+        },
+        gate);
+    Client first(server.port());
+    first.send(request_frame(1));
+    ASSERT_TRUE(gate->wait_first());
+    Client second(server.port());
+    Client third(server.port());
+    second.send(request_frame(2));
+    third.send(request_frame(3));
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.queue_waiters == 1;
+    }));
+    EXPECT_EQ(server.snapshot().queued_messages, 1U);
+    EXPECT_TRUE(second.has_no_ack());
+    EXPECT_TRUE(third.has_no_ack());
+    gate->open();
+    EXPECT_EQ(first.receive_ack().request_id(), 1U);
+    EXPECT_EQ(second.receive_ack().request_id(), 2U);
+    EXPECT_EQ(third.receive_ack().request_id(), 3U);
+}
+
+TEST(AsyncServer, GlobalWaiterProgressesBeforeOwnerCanReacquireSinglePipeline) {
+    auto config = test_config();
+    config.global_budget.messages = 3;
+    auto gate = std::make_shared<BusinessGate>();
+    RunningServer server(
+        config,
+        [gate](const auto& request) {
+            return gate->execute(request);
+        },
+        gate);
+    Client first(server.port());
+    Client second(server.port());
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.used[0].bytes == 2 * read_buffer_bytes;
+    }));
+    server.synchronize_io();
+    server.synchronize_io();
+    first.send(request_frame(1));
+    ASSERT_TRUE(gate->wait_first());
+    second.send(request_frame(2));
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.budget_waiters >= 1;
+    }));
+    first.send(request_frame(4));
+    EXPECT_TRUE(second.has_no_ack());
+    gate->open();
+    EXPECT_EQ(first.receive_ack().request_id(), 1U);
+    EXPECT_EQ(second.receive_ack().request_id(), 2U);
+    EXPECT_EQ(first.receive_ack().request_id(), 4U);
+    EXPECT_EQ(gate->entered(), (std::vector<std::uint64_t>{1, 2, 4}));
+    EXPECT_LE(server.budget_snapshot().peak_total.messages, 3U);
+}
+
+TEST(AsyncServer, AdmittedPartialFrameContinuesDespiteReceiveHighWater) {
+    auto config = test_config();
+    config.global_receive.messages = 1;
+    auto gate = std::make_shared<BusinessGate>();
+    gate->open();
+    RunningServer server(
+        config,
+        [gate](const auto& request) {
+            return gate->execute(request);
+        },
+        gate);
+    Client first(server.port());
+    Client second(server.port());
+    const auto wire = request_frame(1);
+    first.send(wire.substr(0, 6));
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.used[1].messages == 1;
+    }));
+    second.send(request_frame(2));
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.budget_waiters >= 1;
+    }));
+    first.send(wire.substr(6));
+    EXPECT_EQ(first.receive_ack().request_id(), 1U);
+    EXPECT_EQ(second.receive_ack().request_id(), 2U);
+    EXPECT_LE(server.budget_snapshot().peak[1].messages, 1U);
+}
+
+TEST(AsyncServer, OneAckSlotWakesBufferedRequestsAfterWriteCompletion) {
+    auto config = test_config();
+    config.max_send_messages = 1;
+    config.max_send_bytes = max_ack_frame_bytes;
+    RunningServer server(config, [](const auto&) {
+        realtime::Ack ack;
+        ack.set_result(realtime::OK);
+        return ack;
+    });
+    Client client(server.port());
+    client.send(request_frame(1) + request_frame(2) + request_frame(3));
+    for (std::uint64_t id = 1; id <= 3; ++id) {
+        EXPECT_EQ(client.receive_ack().request_id(), id);
+    }
+    EXPECT_EQ(server.budget_snapshot().peak[3].messages, 1U);
+    EXPECT_LE(server.budget_snapshot().peak[3].bytes, max_ack_frame_bytes);
+}
+
+TEST(AsyncServer, ClosingWithPartialAndWaitingFramesReturnsEveryReservation) {
+    auto config = test_config();
+    config.global_receive.messages = 1;
+    RunningServer server(config, [](const auto&) {
+        realtime::Ack ack;
+        return ack;
+    });
+    Client first(server.port());
+    Client second(server.port());
+    first.send(request_frame(1).substr(0, 6));
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.used[1].messages == 1;
+    }));
+    second.send(request_frame(2));
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.budget_waiters >= 1;
+    }));
+    server.stop();
+    EXPECT_TRUE(first.is_closed());
+    EXPECT_TRUE(second.is_closed());
+    server.finish();
+    EXPECT_EQ(server.budget_snapshot().total.bytes, 0U);
+    EXPECT_EQ(server.budget_snapshot().pending_wakeups, 0U);
+}
+
+TEST(AsyncServer, OversizedHandlerAckBecomesBoundedFailure) {
+    RunningServer server(test_config(), [](const auto&) {
+        realtime::Ack ack;
+        ack.set_error(std::string(max_ack_frame_bytes, 'x'));
+        return ack;
+    });
+    Client client(server.port());
+    client.send(request_frame(2));
+    const auto ack = client.receive_ack();
+    EXPECT_EQ(ack.request_id(), 2U);
+    EXPECT_EQ(ack.result(), realtime::INTERNAL_ERROR);
+    EXPECT_EQ(ack.error(), "business result exceeds ACK limit");
+    EXPECT_LE(ack.ByteSizeLong() + 4, max_ack_frame_bytes);
+    EXPECT_LE(server.budget_snapshot().peak[3].bytes, max_ack_frame_bytes);
+}
+
+TEST(AsyncServer, StopWithExecutingQueuedAndCapacityWaitingTasksReturnsAllBudgets) {
+    auto config = test_config();
+    config.business_threads = 1;
+    config.business_queue.queued_messages = 1;
+    auto gate = std::make_shared<BusinessGate>();
+    RunningServer server(
+        config,
+        [gate](const auto& request) {
+            return gate->execute(request);
+        },
+        gate);
+    Client first(server.port());
+    first.send(request_frame(1));
+    ASSERT_TRUE(gate->wait_first());
+    Client second(server.port());
+    Client third(server.port());
+    second.send(request_frame(2));
+    third.send(request_frame(3));
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.queue_waiters == 1;
+    }));
+    server.stop();
+    EXPECT_TRUE(first.is_closed());
+    EXPECT_TRUE(second.is_closed());
+    EXPECT_TRUE(third.is_closed());
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.used[2].messages == 1 && budget.queue_waiters == 0;
+    }));
+    EXPECT_EQ(server.snapshot().queued_messages, 0U);
+    EXPECT_EQ(server.snapshot().outstanding_messages, 1U);
+    gate->open();
+    server.finish();
+    EXPECT_EQ(gate->entered(), (std::vector<std::uint64_t>{1}));
+    EXPECT_EQ(server.budget_snapshot().total.bytes, 0U);
 }

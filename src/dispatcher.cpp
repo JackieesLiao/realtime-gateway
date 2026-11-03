@@ -29,9 +29,10 @@ Dispatcher::~Dispatcher() {
     join();
 }
 
-SubmitStatus Dispatcher::try_submit(
-    std::unique_ptr<realtime::Request>& request, BusinessCompletion completion) {
-    return queue_.try_push(request, std::move(completion));
+SubmitStatus Dispatcher::try_submit(std::unique_ptr<realtime::Request>& request,
+    BusinessCompletion completion,
+    TaskResources* resources) {
+    return queue_.try_push(request, std::move(completion), resources);
 }
 
 void Dispatcher::run_worker() {
@@ -47,9 +48,21 @@ void Dispatcher::run_worker() {
             result.ack.set_error("business handler failed");
         }
         result.ack.set_request_id(request_id);
+        if (result.ack.ByteSizeLong() == 0 || result.ack.ByteSizeLong() > max_ack_frame_bytes - 4) {
+            // Handler 的输出也有硬边界，不能把无界错误信息转移到完成回调队列。
+            {
+                realtime::Ack discarded;
+                discarded.Swap(&result.ack);
+            }
+            failed_tasks_.fetch_add(1, std::memory_order_relaxed);
+            result.ack.set_request_id(request_id);
+            result.ack.set_result(realtime::INTERNAL_ERROR);
+            result.ack.set_error("business result exceeds ACK limit");
+        }
 
         auto completion = std::move(task->completion);
         result.ticket = std::move(task->ticket);
+        result.reply_budget = result.ticket.take_reply_budget();
         task.reset();
         result.ticket.finish_execution();
 
@@ -61,6 +74,10 @@ void Dispatcher::run_worker() {
             failed_completions_.fetch_add(1, std::memory_order_relaxed);
         }
     }
+}
+
+void Dispatcher::set_capacity_notifier(std::function<void()> notifier) {
+    queue_.set_capacity_notifier(std::move(notifier));
 }
 
 void Dispatcher::stop() {

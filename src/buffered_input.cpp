@@ -30,10 +30,12 @@ void BufferedInput::commit_read(std::size_t bytes_received) {
 
 bool BufferedInput::can_read() const {
     return !stopped_ && decoder_.error().empty() && !decoder_.has_frame() &&
-           input_begin_ == input_end_;
+           !decoder_.awaiting_capacity() && input_begin_ == input_end_;
 }
 
-InputStatus BufferedInput::process(const Consumer& consume_body) {
+InputStatus BufferedInput::process(const Consumer& consume_body,
+    const FrameDecoder::Admission& admit,
+    const std::function<void()>& consumed) {
     if (stopped_) {
         return InputStatus::Stopped;
     }
@@ -56,20 +58,29 @@ InputStatus BufferedInput::process(const Consumer& consume_body) {
 
             // 消费者确认接管后才释放当前帧，随后继续处理原始尾部。
             decoder_.take_body();
+            if (consumed) {
+                consumed();
+            }
             continue;
         }
 
-        if (input_begin_ == input_end_) {
+        if (input_begin_ == input_end_ && !decoder_.awaiting_capacity()) {
             input_begin_ = 0;
             input_end_ = 0;
             return InputStatus::NeedRead;
         }
-
+        // read_buffer_.data() 指向缓冲区的第 0 个字节,加上 input_begin_，就是从第几个字节开始：
         const std::span<const char> remaining_bytes(
             read_buffer_.data() + input_begin_, input_end_ - input_begin_);
-        const auto result = decoder_.feed(remaining_bytes);
+        const auto result = decoder_.feed(remaining_bytes, admit);
         input_begin_ += result.consumed_bytes;
 
+        if (stopped_) {
+            return InputStatus::Stopped;
+        }
+        if (result.status == DecodeStatus::AwaitingCapacity) {
+            return InputStatus::Paused;
+        }
         if (result.status == DecodeStatus::Error) {
             return InputStatus::Error;
         }

@@ -25,6 +25,7 @@ public:
     void join_workers();
     std::uint16_t port() const;
     TaskQueueSnapshot business_snapshot() const;
+    ResourceBudgetSnapshot budget_snapshot() const;
 
 private:
     void accept();
@@ -41,6 +42,7 @@ private:
     Config config_;
     Statistics stats_;
     Router router_;
+    ResourceBudget budgets_;
     Dispatcher dispatcher_;
     std::uint16_t port_ = 0;
     std::unordered_map<std::uint64_t, std::shared_ptr<Session>> sessions_;

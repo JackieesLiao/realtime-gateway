@@ -1,8 +1,8 @@
 # realtime-gateway
 
-C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。已完成 **M1、M2.1 和 M2.2**：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
+C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。已完成 **M1、M2.1、M2.2 和 M2.3**：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
 
-本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。WebSocket、gRPC、收发全局预算、高低水位和性能实验尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
+本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。现已支持收发全局预算和高低水位背压；WebSocket、gRPC、限流超时和性能实验尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
 
 ## Linux 依赖
 
@@ -68,7 +68,7 @@ cmake --build --preset asan
 ctest --preset asan
 ```
 
-ASan preset 同时启用 AddressSanitizer、UndefinedBehaviorSanitizer 和 leak 检查，使用非 PIE 的测试可执行文件以固定地址布局。系统 apt 动态库未重新用 sanitizer 编译。测试失败会返回非零；不会因 socket 权限不足而静默跳过。受限执行环境若不允许创建 loopback socket，需要允许本地 socket 后重新运行集成测试。最新真实命令及结果见 [M2.2 验证记录](docs/validation-m2.2.md)。
+ASan preset 同时启用 AddressSanitizer、UndefinedBehaviorSanitizer 和 leak 检查，使用非 PIE 的测试可执行文件以固定地址布局。系统 apt 动态库未重新用 sanitizer 编译。测试失败会返回非零；不会因 socket 权限不足而静默跳过。受限执行环境若不允许创建 loopback socket，需要允许本地 socket 后重新运行集成测试。最新真实命令及结果见 [M2.3 验证记录](docs/validation-m2.3.md)。
 
 TSan 使用单独目录，不能与 ASan 同时启用：
 
@@ -120,8 +120,19 @@ clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/*.cpp
 | max_receive_body_bytes | 1048576 | 1..16777216，单连接待完成消息体上限 |
 | max_send_messages | 64 | 1..65536，含正在写的帧 |
 | max_send_bytes | 262144 | 1..67108864，含帧头和正在写的帧 |
+| global_receive_messages / bytes | 256 / 67108864 | 全局消息体预留，数量 1..1000000，字节 1..16 GiB |
+| global_send_messages / bytes | 4096 / 16777216 | 全局 ACK 预留及线帧，数量 1..1000000，字节 1..16 GiB |
+| global_budget_messages / bytes | 8192 / 134217728 | 各阶段凭证合计，数量 3..1000000，字节 1..16 GiB |
+| backpressure_high_percent | 80 | 1..99，任一数量/字节指标达到高水位后暂停 |
+| backpressure_low_percent | 50 | 0..98，必须小于 high；相关指标均降至低水位后恢复 |
 
-业务 Accepted 后，同连接暂停后续投递和新读，结果回到 strand 后恢复已有输入。业务队列/总在途容量不足时关闭连接；发送容量超限仍关闭。两个 body 限制中较小者生效。业务预算以 Request::ByteSizeLong() 计费，不含 TCP 包头，也不等于 RSS；接收、发送和业务统一的全局预算留到 M2.3。
+业务 Accepted 后，同连接暂停后续投递和新读，结果回到 strand 后恢复已有输入。容量暂时不足时保留输入并等待资源释放事件，不主动循环重试；单帧即使独占资源也无法容纳时关闭连接。协议和单连接两个 body 限制中较小者生效。
+
+`global_budget_bytes` 先保留 `max_connections * 4096` 字节的固定读块池，剩余部分供动态帧使用；启动要求剩余至少 530 字节、总数量至少 3。提高 max_connections 时可能需要同步提高全局字节上限。预留静态池不等于启动时分配所有读块；实际只为已接入连接分配，并计入统计。
+
+合法包头的长度为 L 时，先原子预留接收 L、业务 L+16+256、发送 256 字节，再允许分配消息体。业务额外空间覆盖 protobuf 规范化和 Request/ACK 的短暂并存；ACK 线帧最多 256 字节。统一预算数量是接收/业务/发送阶段凭证数之和，一帧准入时占 3 个，固定读块以连接数限制、不增加消息计数。详细缩减与释放过程见架构文档。
+
+原有业务 queued/outstanding 字节仍以 Request::ByteSizeLong() 计费。统一业务预算上限由 outstanding 字节上限加 `outstanding_messages * (16+256)` 推导，覆盖待投递请求和完成结果；它和队列统计的含义不同。所有字节预算都是逻辑数据上界，不是精确 RSS，不包含分配器及 protobuf 对象开销或任意 Handler 内部的临时分配。
 
 ## 关键设计
 
@@ -136,7 +147,9 @@ Dispatcher 使用显式有界队列和固定 worker 执行 Router，完成结果
 - [M2.1 验证记录](docs/validation-m2.1.md)
 - [M2.2 变更范围与阅读路径](docs/changes-m2.2.md)
 - [M2.2 验证记录](docs/validation-m2.2.md)
+- [M2.3 变更范围与阅读路径](docs/changes-m2.3.md)
+- [M2.3 验证记录](docs/validation-m2.3.md)
 
-当前异步业务路径优先阅读 BoundedTaskQueue::try_push（src/bounded_task_queue.cpp）、Dispatcher::run_worker（src/dispatcher.cpp）和 Session::handle_business_result（src/server.cpp）。分别理解容量准入、锁外执行与凭证回送、ACK 排队和恢复顺序；接收基础继续阅读 FrameDecoder 和 BufferedInput。
+当前背压路径优先阅读 ResourceBudget::try_frame（src/resource_budget.cpp）、ResourceLease::release（同文件）和 Session::process_buffered_input（src/server.cpp）。分别理解原子准入、最后所有者归还和 strand 恢复顺序；业务线程路径继续阅读 Dispatcher::run_worker。
 
-M2.2 已接入真实异步业务暂停与恢复，但资源不足仍关闭连接。当前退出丢弃排队任务并关闭连接，不承诺排空 ACK；执行中 Handler 必须有限时返回。高低水位、统一全局预算、限流、心跳/半包超时和 graceful drain 仍在后续步骤；没有压测或 Docker/CI，也没有未经测量的性能数字。
+M2.3 已实现资源释放唤醒和数量/字节高低水位。当前退出丢弃排队任务并关闭连接，不承诺排空 ACK；执行中 Handler 必须有限时返回。尚无资源等待、半包和写超时，慢对端可能长期占用其预算；下一步 M2.4 实现限流、心跳和期限，M2.5 实现 graceful drain。没有压测或 Docker/CI，也没有未经测量的性能数字。

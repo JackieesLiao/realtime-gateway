@@ -4,6 +4,7 @@
 #include "gateway/log.hpp"
 #include "gateway/send_queue.hpp"
 
+#include <algorithm>
 #include <csignal>
 #include <functional>
 
@@ -32,17 +33,33 @@ public:
     Session(tcp::socket socket,
         const Config& config,
         Dispatcher& dispatcher,
+        ResourceBudget budgets,
+        ConnectionBudget connection_budget,
         std::uint64_t connection_id,
         std::function<void()> on_close)
         : socket_(std::move(socket)),
+          budgets_(std::move(budgets)),
+          account_(std::move(connection_budget.account)),
+          read_reservation_(std::move(connection_budget.read)),
           input_(config.max_body_bytes, config.max_receive_body_bytes),
           sends_(config.max_send_messages, config.max_send_bytes),
           dispatcher_(dispatcher),
+          max_task_bytes_(std::min(
+              config.business_queue.queued_bytes, config.business_queue.outstanding_bytes)),
           connection_id_(connection_id),
           on_close_(std::move(on_close)) {
     }
 
     void start() {
+        const auto executor = socket_.get_executor();
+        budgets_.set_wakeup(account_, [weak = weak_from_this(), executor](WakeupTicket ticket) {
+            asio::post(executor, [weak, ticket = std::move(ticket)] {
+                if (auto session = weak.lock()) {
+                    session->resume_reading();
+                }
+                // ticket 析构清除 pending，推进下一位等待者；每连接至多一个唤醒。
+            });
+        });
         asio::dispatch(socket_.get_executor(), [self = shared_from_this()] {
             self->process_buffered_input();
         });
@@ -75,6 +92,13 @@ private:
             return;
         }
 
+        // 已准入的半帧必须可以收齐，不能被它自己占用的高水位卡住。
+        if (!incoming_.receive && !budgets_.allow_read(account_)) {
+            reading_paused_ = true;
+            return;
+        }
+
+        // 整块缓冲已在接入时预留，覆盖在途 read 可能返回的全部数据。
         // 固定缓冲的所有权持续到读回调；旧输入未消费完时绝不覆盖它。
         const auto buffer = input_.writable_buffer();
         read_in_progress_ = true;
@@ -110,16 +134,25 @@ private:
             return;
         }
 
-        const auto status = input_.process([this](const std::string& body) {
-            if (reading_paused_ || business_in_progress_) {
-                return FrameDisposition::Paused;
-            }
-            if (!handle_body(body)) {
-                return FrameDisposition::Stopped;
-            }
+        const auto status = input_.process(
+            [this](const std::string& body) {
+                if (reading_paused_ || business_in_progress_) {
+                    return FrameDisposition::Paused;
+                }
+                return handle_body(body);
+            },
+            [this](std::size_t bytes) {
+                return admit_frame(bytes);
+            },
+            [this] {
+                // BufferedInput 已销毁消息体存储，现在才归还接收预算。
+                incoming_.receive.release();
+            });
 
-            return FrameDisposition::Accepted;
-        });
+        if (status == InputStatus::Paused) {
+            reading_paused_ = true;
+            return;
+        }
 
         if (status == InputStatus::Error) {
             close(input_.error());
@@ -132,27 +165,68 @@ private:
         }
     }
 
-    bool handle_body(const std::string& body) {
-        auto request = std::make_unique<realtime::Request>();
-        if (!request->ParseFromArray(body.data(), static_cast<int>(body.size()))) {
-            close("invalid_protobuf");
-            return false;
+    bool admit_frame(std::size_t body_bytes) {
+        auto admission = budgets_.try_frame(account_, body_bytes);
+        if (admission.status == BudgetStatus::Acquired) {
+            incoming_ = std::move(admission.reservation);
+            return true;
+        }
+        if (admission.status == BudgetStatus::Impossible) {
+            switch (admission.failure) {
+            case BudgetFailure::Receive:
+                close("receive_capacity");
+                break;
+            case BudgetFailure::Business:
+                close("business_capacity");
+                break;
+            case BudgetFailure::Send:
+                close("send_capacity");
+                break;
+            default:
+                close("global_capacity");
+                break;
+            }
+        }
+        return false;
+    }
+
+    FrameDisposition handle_body(const std::string& body) {
+        if (!pending_request_) {
+            pending_request_ = std::make_unique<realtime::Request>();
+            if (!pending_request_->ParseFromArray(body.data(), static_cast<int>(body.size()))) {
+                close("invalid_protobuf");
+                return FrameDisposition::Stopped;
+            }
+            const auto request_bytes = pending_request_->ByteSizeLong();
+            if (request_bytes > max_task_bytes_ ||
+                request_bytes + max_ack_frame_bytes > incoming_.task.business.bytes()) {
+                close("business_capacity");
+                return FrameDisposition::Stopped;
+            }
+            // 按包头保守预留，解析后只缩小；重复唤醒不再解析同一份 protobuf。
+            incoming_.task.business.shrink_bytes(request_bytes + max_ack_frame_bytes);
         }
 
-        const auto status = dispatcher_.try_submit(request, make_completion());
+        const auto turn = budgets_.queue_turn(account_);
+        if (!turn.allowed) {
+            return FrameDisposition::Paused;
+        }
+        const auto status =
+            dispatcher_.try_submit(pending_request_, make_completion(), &incoming_.task);
         if (status == SubmitStatus::Full) {
-            close("business_capacity");
-            return false;
+            // 资源和 Request 留在连接中；队列释放事件唤醒，无主动重试循环。
+            budgets_.wait_queue(account_, turn.epoch);
+            return FrameDisposition::Paused;
         }
         if (status == SubmitStatus::Stopping) {
             close("dispatcher_stopping");
-            return false;
+            return FrameDisposition::Stopped;
         }
 
-        // 同连接只有一个待处理业务；后续完整帧/尾部由 M2.1 输入状态保留。
+        budgets_.queue_accepted(account_);
         business_in_progress_ = true;
         pause_reading();
-        return true;
+        return FrameDisposition::Accepted;
     }
 
     BusinessCompletion make_completion() {
@@ -178,12 +252,17 @@ private:
         }
 
         business_in_progress_ = false;
-        log({{"event", "business_result"},
-            {"connection_id", connection_id_},
-            {"request_id", result.ack.request_id()},
-            {"result", realtime::Result_Name(result.ack.result())}});
-
-        const bool queued = enqueue_ack(result.ack);
+        bool queued = false;
+        {
+            realtime::Ack ack;
+            ack.Swap(&result.ack);
+            log({{"event", "business_result"},
+                {"connection_id", connection_id_},
+                {"request_id", ack.request_id()},
+                {"result", realtime::Result_Name(ack.result())}});
+            queued = enqueue_ack(ack, std::move(result.reply_budget));
+            // ACK 对象在此作用域结束时销毁，随后才能归还统一业务预算。
+        }
         // 必须先归还旧请求凭证再恢复，否则容量为 1 时会拒绝自己的下一条请求。
         result.ticket.release();
         if (queued) {
@@ -191,8 +270,25 @@ private:
         }
     }
 
-    bool enqueue_ack(const realtime::Ack& ack) {
-        auto frame = std::make_shared<const std::string>(encode_frame(ack.SerializeAsString()));
+    bool enqueue_ack(const realtime::Ack& ack, ResourceLease reply_budget) {
+        const auto body_bytes = ack.ByteSizeLong();
+        if (body_bytes == 0 || body_bytes > max_ack_frame_bytes - 4) {
+            close("ack_too_large");
+            return false;
+        }
+        // 直接写入已预留的线帧，避免 SerializeAsString 再复制一份消息体。
+        std::string wire(body_bytes + 4, '\0');
+        const auto length = static_cast<std::uint32_t>(body_bytes);
+        for (unsigned byte = 0; byte < 4; ++byte) {
+            wire[byte] = static_cast<char>((length >> (24 - 8 * byte)) & 0xff);
+        }
+        if (!ack.SerializeToArray(wire.data() + 4, static_cast<int>(body_bytes))) {
+            close("ack_serialization_error");
+            return false;
+        }
+        reply_budget.shrink_bytes(wire.size());
+        auto frame =
+            std::make_shared<const OutgoingFrame>(std::move(wire), std::move(reply_budget));
         const bool write_chain_idle = sends_.empty();
         if (!sends_.push(std::move(frame))) {
             close("send_capacity");
@@ -210,7 +306,7 @@ private:
         // the active buffer separately, as well as keeping this Session alive.
         auto frame = sends_.front();
         asio::async_write(socket_,
-            asio::buffer(*frame),
+            asio::buffer(frame->bytes),
             [self = shared_from_this(), frame](Error error, std::size_t) {
                 self->handle_write(error);
             });
@@ -238,6 +334,7 @@ private:
         }
         closed_ = true;
         input_.stop();
+        budgets_.close(account_);
 
         Error ignored_error;
         socket_.cancel(ignored_error);
@@ -253,11 +350,18 @@ private:
 
     // Every member below is accessed on the socket's dedicated connection strand.
     tcp::socket socket_;
+    ResourceBudget budgets_;
+    std::shared_ptr<BudgetAccount> account_;
+    // 先声明凭证、后声明数据，保证逆序销毁时数据先释放。
+    ResourceLease read_reservation_;
+    FrameReservation incoming_;
     BufferedInput input_;
+    std::unique_ptr<realtime::Request> pending_request_;
     SendQueue sends_;
 
     // main keeps Server (and its Dispatcher) alive until all I/O callbacks have drained.
     Dispatcher& dispatcher_;
+    std::size_t max_task_bytes_;
     std::uint64_t connection_id_;
     std::function<void()> on_close_;
     bool business_in_progress_ = false;
@@ -273,8 +377,9 @@ Server::Server(asio::io_context& io, Config config, Dispatcher::Handler handler)
       signals_(strand_, SIGINT, SIGTERM),
       config_(std::move(config)),
       router_(stats_),
+      budgets_(config_.budget_limits()),
       dispatcher_(config_.business_threads,
-          config_.business_queue,
+          config_.task_queue_limits(),
           make_business_handler(router_, std::move(handler))) {
     const tcp::endpoint endpoint(asio::ip::make_address(config_.listen_address), config_.port);
     acceptor_.open(endpoint.protocol());
@@ -282,6 +387,9 @@ Server::Server(asio::io_context& io, Config config, Dispatcher::Handler handler)
     acceptor_.bind(endpoint);
     acceptor_.listen();
     port_ = acceptor_.local_endpoint().port();
+    dispatcher_.set_capacity_notifier([budgets = budgets_] {
+        budgets.notify_task_capacity();
+    });
 }
 
 void Server::start() {
@@ -340,8 +448,21 @@ void Server::handle_accept(Error error, const std::shared_ptr<tcp::socket>& sock
         }
     };
 
-    auto session = std::make_shared<Session>(
-        std::move(*socket), config_, dispatcher_, connection_id, std::move(on_close));
+    auto connection_budget = budgets_.open(connection_id);
+    if (!connection_budget) {
+        Error ignored_error;
+        socket->close(ignored_error);
+        log({{"event", "connection_rejected"}, {"reason", "global_read_capacity"}});
+        accept();
+        return;
+    }
+    auto session = std::make_shared<Session>(std::move(*socket),
+        config_,
+        dispatcher_,
+        budgets_,
+        std::move(*connection_budget),
+        connection_id,
+        std::move(on_close));
     sessions_.emplace(connection_id, session);
     session->start();
     accept();
@@ -349,6 +470,7 @@ void Server::handle_accept(Error error, const std::shared_ptr<tcp::socket>& sock
 
 void Server::report_statistics() const {
     const auto business = dispatcher_.snapshot();
+    const auto budget = budgets_.snapshot();
     log({{"event", "statistics"},
         {"processed", stats_.processed.load()},
         {"rejected", stats_.rejected.load()},
@@ -357,7 +479,11 @@ void Server::report_statistics() const {
         {"business_outstanding", business.outstanding_messages},
         {"business_outstanding_bytes", business.outstanding_bytes},
         {"business_failed", dispatcher_.failed_tasks()},
-        {"completion_failed", dispatcher_.failed_completions()}});
+        {"completion_failed", dispatcher_.failed_completions()},
+        {"budget_messages", budget.total.messages},
+        {"budget_bytes", budget.total.bytes},
+        {"budget_waiters", budget.budget_waiters + budget.queue_waiters},
+        {"budget_pending_wakeups", budget.pending_wakeups}});
 }
 
 void Server::join_workers() {
@@ -371,6 +497,10 @@ std::uint16_t Server::port() const {
 
 TaskQueueSnapshot Server::business_snapshot() const {
     return dispatcher_.snapshot();
+}
+
+ResourceBudgetSnapshot Server::budget_snapshot() const {
+    return budgets_.snapshot();
 }
 
 void Server::stop() {

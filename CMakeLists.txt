@@ -42,6 +42,7 @@ target_include_directories(gateway_proto PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(gateway_proto PUBLIC protobuf::libprotobuf)
 
 add_library(gateway_core
+    src/resource_budget.cpp
     src/frame.cpp
     src/buffered_input.cpp
     src/config.cpp
@@ -84,6 +85,7 @@ if(BUILD_TESTING)
         tests/unit.cpp
         tests/buffered_input_test.cpp
         tests/dispatcher_test.cpp
+        tests/resource_budget_test.cpp
     )
     target_link_libraries(gateway_tests PRIVATE gateway_core GTest::gtest_main)
     add_test(NAME unit COMMAND gateway_tests)

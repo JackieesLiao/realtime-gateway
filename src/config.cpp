@@ -1,5 +1,6 @@
 #include "gateway/config.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 
@@ -61,6 +62,30 @@ Config Config::load(const std::string& path) {
         } else if (key == "max_business_outstanding_bytes") {
             require_range(1, 256 * 1024 * 1024);
             config.business_queue.outstanding_bytes = numeric_value;
+        } else if (key == "global_receive_messages") {
+            require_range(1, 1000000);
+            config.global_receive.messages = numeric_value;
+        } else if (key == "global_receive_bytes") {
+            require_range(1, 16ULL * 1024 * 1024 * 1024);
+            config.global_receive.bytes = numeric_value;
+        } else if (key == "global_send_messages") {
+            require_range(1, 1000000);
+            config.global_send.messages = numeric_value;
+        } else if (key == "global_send_bytes") {
+            require_range(1, 16ULL * 1024 * 1024 * 1024);
+            config.global_send.bytes = numeric_value;
+        } else if (key == "global_budget_messages") {
+            require_range(3, 1000000);
+            config.global_budget.messages = numeric_value;
+        } else if (key == "global_budget_bytes") {
+            require_range(1, 16ULL * 1024 * 1024 * 1024);
+            config.global_budget.bytes = numeric_value;
+        } else if (key == "backpressure_high_percent") {
+            require_range(1, 99);
+            config.backpressure_high_percent = static_cast<unsigned>(numeric_value);
+        } else if (key == "backpressure_low_percent") {
+            require_range(0, 98);
+            config.backpressure_low_percent = static_cast<unsigned>(numeric_value);
         } else if (key == "max_body_bytes") {
             require_range(1, 16 * 1024 * 1024);
             config.max_body_bytes = numeric_value;
@@ -78,7 +103,34 @@ Config Config::load(const std::string& path) {
         }
     }
 
+    // 统一校验水位关系和固定读块的全局保留空间，不分配网络缓冲。
+    ResourceBudget validated(config.budget_limits());
     return config;
+}
+
+ResourceBudgetLimits Config::budget_limits() const {
+    ResourceBudgetLimits limits;
+    limits.connections = max_connections;
+    limits.receive_body_bytes = std::min(max_body_bytes, max_receive_body_bytes);
+    limits.receive = global_receive;
+    // 队列仍按请求字节计费；统一预算额外预留接收规范化余量和并存的 ACK 对象。
+    const auto completion_headroom =
+        business_queue.outstanding_messages * (request_reserve_padding + max_ack_frame_bytes);
+    limits.business = {business_queue.outstanding_messages,
+        business_queue.outstanding_bytes + completion_headroom};
+    limits.local_send = {max_send_messages, max_send_bytes};
+    limits.send = global_send;
+    limits.total = global_budget;
+    limits.high_percent = backpressure_high_percent;
+    limits.low_percent = backpressure_low_percent;
+    return limits;
+}
+
+TaskQueueLimits Config::task_queue_limits() const {
+    auto limits = business_queue;
+    limits.high_percent = backpressure_high_percent;
+    limits.low_percent = backpressure_low_percent;
+    return limits;
 }
 
 } // namespace gateway

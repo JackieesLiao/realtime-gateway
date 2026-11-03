@@ -21,9 +21,11 @@ public:
     Dispatcher(const Dispatcher&) = delete;
     Dispatcher& operator=(const Dispatcher&) = delete;
 
-    SubmitStatus try_submit(
-        std::unique_ptr<realtime::Request>& request, BusinessCompletion completion);
+    SubmitStatus try_submit(std::unique_ptr<realtime::Request>& request,
+        BusinessCompletion completion,
+        TaskResources* resources = nullptr);
     void stop();
+    void set_capacity_notifier(std::function<void()> notifier);
 
     // 只在 I/O run() 返回后的控制线程调用，不能在 I/O 回调中等待 worker。
     void join();

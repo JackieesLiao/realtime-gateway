@@ -189,7 +189,7 @@ TEST(Frame, TakingPartialBodyFailsWithoutDiscardingIt) {
 
 TEST(SendQueue, CountIncludesInFlightAndBudgetReturns) {
     SendQueue queue(1, 100);
-    auto frame = std::make_shared<const std::string>("1234");
+    auto frame = std::make_shared<const OutgoingFrame>("1234");
     EXPECT_TRUE(queue.push(frame));
 
     auto active_write_buffer = queue.front();
@@ -202,21 +202,21 @@ TEST(SendQueue, CountIncludesInFlightAndBudgetReturns) {
     queue.clear();
     EXPECT_EQ(queue.bytes(), 0U);
     EXPECT_TRUE(queue.empty());
-    EXPECT_EQ(*active_write_buffer, "1234");
+    EXPECT_EQ(active_write_buffer->bytes, "1234");
 }
 
 TEST(SendQueue, ByteBoundaryAndOversizedSingleFrame) {
     SendQueue queue(3, 8);
-    auto frame = std::make_shared<const std::string>("1234");
+    auto frame = std::make_shared<const OutgoingFrame>("1234");
     EXPECT_TRUE(queue.push(frame));
     EXPECT_TRUE(queue.push(frame));
-    EXPECT_FALSE(queue.push(std::make_shared<const std::string>("x")));
+    EXPECT_FALSE(queue.push(std::make_shared<const OutgoingFrame>("x")));
 
     queue.pop();
     EXPECT_TRUE(queue.push(frame));
 
     queue.clear();
-    EXPECT_FALSE(queue.push(std::make_shared<const std::string>(9, 'x')));
+    EXPECT_FALSE(queue.push(std::make_shared<const OutgoingFrame>(std::string(9, 'x'))));
     EXPECT_EQ(queue.bytes(), 0U);
 }
 
@@ -279,6 +279,11 @@ TEST(Config, RejectsUnsafeSettingsAndTypos) {
         "{\"business_threads\":0}",
         "{\"max_business_queue_bytes\":0}",
         "{\"max_business_outstanding_messages\":0}",
+        "{\"backpressure_high_percent\":0}",
+        "{\"backpressure_low_percent\":80}",
+        "{\"global_budget_messages\":2}",
+        "{\"global_budget_bytes\":4096}",
+        "{\"global_receive_messages\":0}",
     };
 
     for (const auto& document : invalid_configs) {
@@ -296,4 +301,39 @@ TEST(Config, RejectsUnsafeSettingsAndTypos) {
 
     EXPECT_EQ(Config::load(path.string()).max_receive_body_bytes, 8U);
     std::filesystem::remove(path);
+}
+
+TEST(Frame, CapacityPauseConsumesOnlyHeaderAndAllocatesNothing) {
+    FrameDecoder decoder(1024, 1024);
+    const auto wire = encode_frame(std::string(100, 'x'));
+    const auto capacity = decoder.allocated_body_capacity();
+    const auto deny = [](std::size_t size) {
+        EXPECT_EQ(size, 100U);
+        return false;
+    };
+    const auto paused = decoder.feed(wire, deny);
+    EXPECT_EQ(paused.status, DecodeStatus::AwaitingCapacity);
+    EXPECT_EQ(paused.consumed_bytes, 4U);
+    EXPECT_EQ(decoder.allocated_body_capacity(), capacity);
+    EXPECT_EQ(decoder.buffered_body_bytes(), 0U);
+    EXPECT_TRUE(decoder.awaiting_capacity());
+    EXPECT_EQ(decoder.feed(std::span(wire).subspan(4), deny).consumed_bytes, 0U);
+
+    const auto admitted = decoder.feed({}, [](std::size_t) {
+        return true;
+    });
+    EXPECT_EQ(admitted.status, DecodeStatus::NeedMore);
+    EXPECT_EQ(admitted.consumed_bytes, 0U);
+    EXPECT_FALSE(decoder.awaiting_capacity());
+    ASSERT_EQ(decoder.feed(std::span(wire).subspan(4)).status, DecodeStatus::FrameReady);
+    EXPECT_EQ(decoder.take_body(), std::string(100, 'x'));
+}
+
+TEST(Protobuf, CanonicalRequestCostCanExceedReceivedBodyButFitsPadding) {
+    // enum -1 的五字节输入会规范化为十字节编码，因此不能直接把线长度当副本成本。
+    const std::string body = "\x08\x01\x12\x01r\x18\xff\xff\xff\xff\x0f\x22\x01x";
+    realtime::Request request;
+    ASSERT_TRUE(request.ParseFromString(body));
+    EXPECT_GT(request.ByteSizeLong(), body.size());
+    EXPECT_LE(request.ByteSizeLong(), body.size() + request_reserve_padding);
 }

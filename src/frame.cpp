@@ -28,7 +28,7 @@ FrameDecoder::FrameDecoder(std::size_t max_body_bytes, std::size_t receive_body_
     : max_body_bytes_(max_body_bytes), receive_body_capacity_(receive_body_capacity) {
 }
 
-DecodeResult FrameDecoder::feed(std::span<const char> remaining_bytes) {
+DecodeResult FrameDecoder::feed(std::span<const char> remaining_bytes, const Admission& admit) {
     if (!error_.empty()) {
         return {0, DecodeStatus::Error};
     }
@@ -39,9 +39,12 @@ DecodeResult FrameDecoder::feed(std::span<const char> remaining_bytes) {
     }
 
     const auto input_size = remaining_bytes.size();
-    while (!remaining_bytes.empty()) {
+    while (true) {
         // 先处理包头还没收齐的情况，进度保存在成员中供下次 feed 继续。
         if (header_bytes_received_ < header_.size()) {
+            if (remaining_bytes.empty()) {
+                return {input_size, DecodeStatus::NeedMore};
+            }
             header_[header_bytes_received_] = static_cast<unsigned char>(remaining_bytes.front());
             ++header_bytes_received_;
             remaining_bytes = remaining_bytes.subspan(1);
@@ -69,7 +72,18 @@ DecodeResult FrameDecoder::feed(std::span<const char> remaining_bytes) {
             }
 
             expected_body_bytes_ = body_length;
+        }
+
+        // 即使包头恰好耗尽本次输入，也要先准入，不能直接启动下一次读。
+        if (!body_admitted_) {
+            if (admit && !admit(expected_body_bytes_)) {
+                return {input_size - remaining_bytes.size(), DecodeStatus::AwaitingCapacity};
+            }
             body_.reserve(expected_body_bytes_);
+            body_admitted_ = true;
+        }
+        if (remaining_bytes.empty()) {
+            return {input_size, DecodeStatus::NeedMore};
         }
 
         const auto missing_body_bytes = expected_body_bytes_ - body_.size();
@@ -82,8 +96,10 @@ DecodeResult FrameDecoder::feed(std::span<const char> remaining_bytes) {
             return {input_size - remaining_bytes.size(), DecodeStatus::FrameReady};
         }
     }
+}
 
-    return {input_size, DecodeStatus::NeedMore};
+bool FrameDecoder::awaiting_capacity() const {
+    return error_.empty() && expected_body_bytes_ != 0 && !body_admitted_;
 }
 
 bool FrameDecoder::has_frame() const {
@@ -108,6 +124,7 @@ std::string FrameDecoder::take_body() {
     completed_body.swap(body_);
     header_bytes_received_ = 0;
     expected_body_bytes_ = 0;
+    body_admitted_ = false;
     return completed_body;
 }
 

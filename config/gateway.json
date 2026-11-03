@@ -11,5 +11,13 @@
     "max_business_queue_messages": 128,
     "max_business_queue_bytes": 8388608,
     "max_business_outstanding_messages": 256,
-    "max_business_outstanding_bytes": 16777216
+    "max_business_outstanding_bytes": 16777216,
+    "global_receive_messages": 256,
+    "global_receive_bytes": 67108864,
+    "global_send_messages": 4096,
+    "global_send_bytes": 16777216,
+    "global_budget_messages": 8192,
+    "global_budget_bytes": 134217728,
+    "backpressure_high_percent": 80,
+    "backpressure_low_percent": 50
 }

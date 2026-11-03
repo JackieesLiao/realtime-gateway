@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gateway.pb.h"
+#include "gateway/resource_budget.hpp"
 
 #include <cstddef>
 #include <functional>
@@ -13,6 +14,8 @@ struct TaskQueueLimits {
     std::size_t queued_bytes = 8 * 1024 * 1024;
     std::size_t outstanding_messages = 256;
     std::size_t outstanding_bytes = 16 * 1024 * 1024;
+    unsigned high_percent = 80;
+    unsigned low_percent = 50;
 };
 
 enum class SubmitStatus {
@@ -28,6 +31,7 @@ struct TaskQueueSnapshot {
     std::size_t outstanding_messages;
     std::size_t outstanding_bytes;
     bool stopping;
+    bool paused;
 };
 
 struct TaskQueueState;
@@ -46,6 +50,7 @@ public:
 
     void finish_execution();
     void release();
+    ResourceLease take_reply_budget();
 
 private:
     friend class BoundedTaskQueue;
@@ -53,11 +58,13 @@ private:
     std::shared_ptr<TaskQueueState> state_;
     std::size_t bytes_ = 0;
     bool executing_ = false;
+    TaskResources resources_;
 };
 
 struct BusinessResult {
     // 成员逆序销毁：先销毁 ACK，最后才归还任务预算。
     TaskTicket ticket;
+    ResourceLease reply_budget;
     realtime::Ack ack;
 };
 
@@ -79,13 +86,15 @@ public:
     BoundedTaskQueue& operator=(const BoundedTaskQueue&) = delete;
 
     // 不等待空位。只有 Accepted 才移动 request，失败时调用方仍持有原请求。
-    SubmitStatus try_push(
-        std::unique_ptr<realtime::Request>& request, BusinessCompletion completion);
+    SubmitStatus try_push(std::unique_ptr<realtime::Request>& request,
+        BusinessCompletion completion,
+        TaskResources* resources = nullptr);
 
     // 仅供业务线程调用：队列为空时睡眠，stop 后返回空指针。
     std::unique_ptr<BusinessTask> wait_pop();
     void stop();
     TaskQueueSnapshot snapshot() const;
+    void set_capacity_notifier(std::function<void()> notifier);
 
 private:
     std::shared_ptr<TaskQueueState> state_;

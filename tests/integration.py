@@ -118,6 +118,10 @@ class RunningServer:
             stats = next(event for event in self.events if event['event'] == 'statistics')
             assert stats['business_outstanding'] == 0, output
             assert stats['business_outstanding_bytes'] == 0, output
+            assert stats['budget_messages'] == 0, output
+            assert stats['budget_bytes'] == 0, output
+            assert stats['budget_waiters'] == 0, output
+            assert stats['budget_pending_wakeups'] == 0, output
             assert 'AddressSanitizer' not in output, output
             assert 'runtime error:' not in output, output
         finally:
@@ -235,6 +239,24 @@ class TcpIntegration(unittest.TestCase):
             sock.sendall(b''.join(request(rid) for rid in range(1, 21)))
             for rid in range(1, 21):
                 ack(sock, rid)
+
+    def test_one_reserved_ack_slot_pauses_and_resumes_buffered_pipeline(self):
+        # 一条 ACK 在途时不能准入下一帧；不假设内核写缓冲何时变满。
+        with RunningServer(max_send_messages=1, max_send_bytes=256) as server:
+            with server.connect() as sock:
+                sock.sendall(b''.join(request(rid) for rid in range(1, 31)))
+                for rid in range(1, 31):
+                    ack(sock, rid)
+
+    def test_small_combined_global_budget_multiple_connections(self):
+        with RunningServer(global_budget_messages=3) as server:
+            def one(rid):
+                with server.connect() as sock:
+                    sock.sendall(request(rid) + request(rid + 100))
+                    ack(sock, rid)
+                    ack(sock, rid + 100)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                list(pool.map(one, range(1, 7)))
 
     def test_frame_limit_boundary(self):
         body = pb.Request(request_id=88, device_id='r', message_type=pb.TELEMETRY,

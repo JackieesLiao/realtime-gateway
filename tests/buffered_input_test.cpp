@@ -239,3 +239,55 @@ TEST(BufferedInput, ConsumerTriggeredStopTakesPriorityOverItsReturnValue) {
             InputStatus::Stopped);
     }
 }
+
+TEST(BufferedInput, HeaderOnlyCapacityWaitResumesBeforeAnyNewRead) {
+    BufferedInput input(64, 64);
+    const auto wire = encode_frame("hello");
+    stage_input(input, wire.substr(0, 4));
+    bool allow = false;
+    int accepted = 0;
+    int released = 0;
+    const auto consumer = [&](const auto& body) {
+        EXPECT_EQ(body, "hello");
+        ++accepted;
+        return FrameDisposition::Accepted;
+    };
+    const auto admission = [&](std::size_t size) {
+        EXPECT_EQ(size, 5U);
+        return allow;
+    };
+    const auto consumed = [&] {
+        EXPECT_FALSE(input.has_frame());
+        ++released;
+    };
+
+    EXPECT_EQ(input.process(consumer, admission, consumed), InputStatus::Paused);
+    EXPECT_EQ(input.unread_bytes(), 0U);
+    EXPECT_FALSE(input.can_read());
+    EXPECT_THROW(input.writable_buffer(), std::logic_error);
+    EXPECT_EQ(accepted, 0);
+    EXPECT_EQ(input.process(consumer, admission, consumed), InputStatus::Paused);
+    allow = true;
+    EXPECT_EQ(input.process(consumer, admission, consumed), InputStatus::NeedRead);
+    EXPECT_TRUE(input.can_read());
+    stage_input(input, wire.substr(4));
+    EXPECT_EQ(input.process(consumer, admission, consumed), InputStatus::NeedRead);
+    EXPECT_EQ(accepted, 1);
+    EXPECT_EQ(released, 1);
+}
+
+TEST(BufferedInput, AdmissionMayCloseInputWithoutReportingRecoverablePause) {
+    BufferedInput input(64, 64);
+    stage_input(input, encode_frame("hello"));
+    const auto status = input.process(
+        [](const auto&) {
+            ADD_FAILURE() << "closed admission reached consumer";
+            return FrameDisposition::Accepted;
+        },
+        [&](std::size_t) {
+            input.stop();
+            return false;
+        });
+    EXPECT_EQ(status, InputStatus::Stopped);
+    EXPECT_FALSE(input.can_read());
+}

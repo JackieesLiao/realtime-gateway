@@ -351,3 +351,55 @@ TEST(Dispatcher, ThrowingCompletionDoesNotTerminateWorker) {
     EXPECT_EQ(dispatcher.failed_completions(), 1U);
     EXPECT_EQ(dispatcher.snapshot().outstanding_messages, 0U);
 }
+
+TEST(TaskQueue, QueueHighWaterWaitsForLowEvenWhenHardSlotsRemain) {
+    const auto request_bytes = make_request()->ByteSizeLong();
+    for (const bool byte_watermark : {false, true}) {
+        TaskQueueLimits limits;
+        limits.queued_messages = 4;
+        if (byte_watermark) {
+            limits.queued_messages = 100;
+            limits.queued_bytes = 4 * request_bytes;
+        }
+        limits.outstanding_messages = 8;
+        limits.high_percent = 75;
+        limits.low_percent = 25;
+        BoundedTaskQueue queue(limits);
+        for (std::uint64_t id = 1; id <= 3; ++id) {
+            auto request = make_request(id);
+            ASSERT_EQ(queue.try_push(request, discard_result), SubmitStatus::Accepted);
+        }
+        ASSERT_TRUE(queue.snapshot().paused);
+        auto fourth = make_request(4);
+        EXPECT_EQ(queue.try_push(fourth, discard_result), SubmitStatus::Full);
+        auto first = queue.wait_pop();
+        EXPECT_EQ(queue.snapshot().queued_messages, 2U);
+        EXPECT_TRUE(queue.snapshot().paused);
+        EXPECT_EQ(queue.try_push(fourth, discard_result), SubmitStatus::Full);
+        auto second = queue.wait_pop();
+        EXPECT_FALSE(queue.snapshot().paused);
+        EXPECT_EQ(queue.try_push(fourth, discard_result), SubmitStatus::Accepted);
+    }
+}
+
+TEST(Dispatcher, OversizedResultIsBoundedBeforePostingCompletion) {
+    std::promise<BusinessResult> completed;
+    auto future = completed.get_future();
+    Dispatcher dispatcher(1, {}, [](const auto&) {
+        realtime::Ack ack;
+        ack.set_error(std::string(1024, 'x'));
+        return ack;
+    });
+    auto request = make_request(7);
+    ASSERT_EQ(dispatcher.try_submit(request,
+                  [&](BusinessResult result) {
+                      completed.set_value(std::move(result));
+                  }),
+        SubmitStatus::Accepted);
+    ASSERT_EQ(future.wait_for(3s), std::future_status::ready);
+    auto result = future.get();
+    EXPECT_EQ(result.ack.request_id(), 7U);
+    EXPECT_EQ(result.ack.result(), realtime::INTERNAL_ERROR);
+    EXPECT_LE(result.ack.ByteSizeLong() + 4, max_ack_frame_bytes);
+    EXPECT_EQ(dispatcher.failed_tasks(), 1U);
+}
