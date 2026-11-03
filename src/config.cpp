@@ -22,6 +22,14 @@ Config Config::load(const std::string& path) {
 
     Config config;
     for (const auto& [key, value] : document.items()) {
+        if (key == "log_level") {
+            config.log_level = value.get<std::string>();
+            if (config.log_level != "info" && config.log_level != "debug") {
+                throw std::runtime_error("log_level must be info or debug");
+            }
+            continue;
+        }
+
         if (key == "listen_address") {
             config.listen_address = value.get<std::string>();
             continue;

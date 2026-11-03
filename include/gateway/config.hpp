@@ -9,6 +9,7 @@
 namespace gateway {
 
 struct Config {
+    std::string log_level = "info";
     std::string listen_address = "127.0.0.1";
     std::uint16_t port = 9000;
     std::size_t io_threads = 2;

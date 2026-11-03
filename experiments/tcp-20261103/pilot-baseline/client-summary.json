@@ -1,0 +1,21 @@
+{
+  "acknowledged_in_measure_interval": 73086,
+  "acknowledged_including_warmup": 96593,
+  "connections": 16,
+  "drain_ns": 42495907,
+  "errors": [],
+  "max_ns": 46258375,
+  "measure_seconds": 3,
+  "measurement_samples": 73086,
+  "mode": "closed_loop",
+  "p50_ns": 5200892,
+  "p95_ns": 6757059,
+  "p99_ns": 7537473,
+  "payload_bytes_per_request": 256,
+  "payload_bytes_sent_including_warmup": 24727808,
+  "sent_including_warmup": 96593,
+  "start_monotonic_ns": 83578182461909,
+  "throughput_ack_per_second": 24362.0,
+  "warmup_seconds": 1,
+  "window_per_connection": 8
+}

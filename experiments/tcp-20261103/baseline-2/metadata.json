@@ -1,0 +1,140 @@
+{
+  "environment": {
+    "utc": "2026-11-03T04:22:09.895574+00:00",
+    "uname": {
+      "system": "Linux",
+      "node": "LAPTOP-33PRCHEL",
+      "release": "6.6.87.2-microsoft-standard-WSL2",
+      "version": "#1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025",
+      "machine": "x86_64",
+      "processor": "x86_64"
+    },
+    "os_release": "PRETTY_NAME=\"Ubuntu 24.04.4 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.4 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo",
+    "memory": "MemTotal:       16007292 kB\nMemFree:        11959924 kB\nMemAvailable:   12686244 kB\nBuffers:            5052 kB\nCached:           864216 kB\nSwapCached:            0 kB\nActive:           404008 kB\nInactive:        2872380 kB\nActive(anon):       2852 kB\nInactive(anon):  2408400 kB\nActive(file):     401156 kB\nInactive(file):   463980 kB\nUnevictable:           0 kB\nMlocked:               0 kB\nSwapTotal:       4194304 kB\nSwapFree:        4194304 kB\nDirty:              4536 kB\nWriteback:             0 kB\nAnonPages:       2407016 kB\nMapped:           596464 kB\nShmem:              4068 kB\nKReclaimable:      92580 kB\nSlab:             268380 kB\nSReclaimable:      92580 kB\nSUnreclaim:       175800 kB\nKernelStack:       12512 kB\nPageTables:        29776 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    12197948 kB\nCommitted_AS:    4756324 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:      130120 kB\nVmallocChunk:          0 kB\nPercpu:            16256 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:         0 kB\nFilePmdMapped:         0 kB\nUnaccepted:            0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:       95232 kB\nDirectMap2M:     8972288 kB\nDirectMap1G:    15728640 kB",
+    "cpu_topology": {
+      "command": [
+        "lscpu",
+        "-p=CPU,CORE,SOCKET"
+      ],
+      "returncode": 0,
+      "stdout": "# The following is the parsable format, which can be fed to other\n# programs. Each different item in every column has an unique ID\n# starting usually from zero.\n# CPU,Core,Socket\n0,0,0\n1,0,0\n2,1,0\n3,1,0\n4,2,0\n5,2,0\n6,3,0\n7,3,0\n8,4,0\n9,4,0\n10,5,0\n11,5,0\n12,6,0\n13,6,0\n14,7,0\n15,7,0\n16,8,0\n17,8,0\n18,9,0\n19,9,0\n20,10,0\n21,10,0\n22,11,0\n23,11,0\n24,12,0\n25,12,0\n26,13,0\n27,13,0\n28,14,0\n29,14,0\n30,15,0\n31,15,0\n",
+      "stderr": ""
+    },
+    "cpu_model": {
+      "command": [
+        "lscpu"
+      ],
+      "returncode": 0,
+      "stdout": "Architecture:                         x86_64\nCPU op-mode(s):                       32-bit, 64-bit\nAddress sizes:                        48 bits physical, 48 bits virtual\nByte Order:                           Little Endian\nCPU(s):                               32\nOn-line CPU(s) list:                  0-31\nVendor ID:                            AuthenticAMD\nModel name:                           AMD Ryzen 9 8945HX with Radeon Graphics\nCPU family:                           25\nModel:                                97\nThread(s) per core:                   2\nCore(s) per socket:                   16\nSocket(s):                            1\nStepping:                             2\nBogoMIPS:                             4990.52\nFlags:                                fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl tsc_reliable nonstop_tsc cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext perfctr_core ssbd ibrs ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx512_bf16 clzero xsaveerptr arat avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid fsrm\nHypervisor vendor:                    Microsoft\nVirtualization type:                  full\nL1d cache:                            512 KiB (16 instances)\nL1i cache:                            512 KiB (16 instances)\nL2 cache:                             16 MiB (16 instances)\nL3 cache:                             32 MiB (1 instance)\nNUMA node(s):                         1\nNUMA node0 CPU(s):                    0-31\nVulnerability Gather data sampling:   Not affected\nVulnerability Itlb multihit:          Not affected\nVulnerability L1tf:                   Not affected\nVulnerability Mds:                    Not affected\nVulnerability Meltdown:               Not affected\nVulnerability Mmio stale data:        Not affected\nVulnerability Reg file data sampling: Not affected\nVulnerability Retbleed:               Not affected\nVulnerability Spec rstack overflow:   Vulnerable: Safe RET, no microcode\nVulnerability Spec store bypass:      Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:             Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:             Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                  Not affected\nVulnerability Tsx async abort:        Not affected\n",
+      "stderr": ""
+    },
+    "available_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31
+    ],
+    "clock_ticks_per_second": 100,
+    "cgroup": "0::/init.scope",
+    "cgroup_cpu_max": "[Errno 2] No such file or directory: '/sys/fs/cgroup/cpu.max'",
+    "cgroup_memory_max": "[Errno 2] No such file or directory: '/sys/fs/cgroup/memory.max'",
+    "cpu_pressure": "some avg10=2.97 avg60=1.60 avg300=0.46 total=41017571\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+    "loadavg": "1.71 0.61 0.23 2/754 274228",
+    "compiler": {
+      "command": [
+        "/usr/bin/g++",
+        "--version"
+      ],
+      "returncode": 0,
+      "stdout": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+      "stderr": ""
+    },
+    "protoc": {
+      "command": [
+        "/usr/bin/protoc",
+        "--version"
+      ],
+      "returncode": 0,
+      "stdout": "libprotoc 3.21.12\n",
+      "stderr": ""
+    },
+    "packages": {
+      "command": [
+        "dpkg-query",
+        "-W",
+        "libboost1.83-dev",
+        "libprotobuf-dev",
+        "libspdlog-dev",
+        "nlohmann-json3-dev"
+      ],
+      "returncode": 0,
+      "stdout": "libboost1.83-dev:amd64\t1.83.0-2.1ubuntu3.2\nlibprotobuf-dev:amd64\t3.21.12-8.2ubuntu0.3\nlibspdlog-dev:amd64\t1:1.12.0+ds-2build1\nnlohmann-json3-dev\t3.11.3-1\n",
+      "stderr": ""
+    }
+  },
+  "server_command": [
+    "taskset",
+    "-c",
+    "0,2,4,6",
+    "/tmp/gateway-perf-baseline-server",
+    "/home/aethershade/cpp-code/realtime-gateway/experiments/tcp-20261103/baseline-2/server-config.json"
+  ],
+  "server_sha256": "62ead86764809c9e8a43162eb7e3b3ae3bed5f812dfbedefbb6a9d584d0d8c72",
+  "client_sha256": "a468a58de6ecb02dbe8d3dc35dd8a00cbc8338b89a8e551a4afd9f63e76a08f2",
+  "baseline_source_commit": "719942d20fd52c6150959ffde040175d49488437",
+  "arguments": {
+    "server": "/tmp/gateway-perf-baseline-server",
+    "client": "build/release/gateway_bench",
+    "out": "experiments/tcp-20261103/baseline-2",
+    "config": "experiments/tcp-20261103/common-config.json",
+    "server_cpus": "0,2,4,6",
+    "client_cpus": "8,10,12,14,16,18,20,22",
+    "connections": "16",
+    "window": "8",
+    "payload": "256",
+    "warmup": "2",
+    "seconds": "6"
+  },
+  "client_command": [
+    "taskset",
+    "-c",
+    "8,10,12,14,16,18,20,22",
+    "/home/aethershade/cpp-code/realtime-gateway/build/release/gateway_bench",
+    "41986",
+    "16",
+    "8",
+    "256",
+    "2",
+    "6",
+    "/home/aethershade/cpp-code/realtime-gateway/experiments/tcp-20261103/baseline-2/samples.csv",
+    "2000000"
+  ]
+}

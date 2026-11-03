@@ -1,0 +1,342 @@
+{
+  "runs": [
+    {
+      "run": "baseline-1",
+      "throughput_ack_per_second": 24235.166666666668,
+      "p50_ms": 5.232844,
+      "p95_ms": 6.802069,
+      "p99_ms": 7.595808,
+      "max_ms": 48.288474,
+      "measurement_samples": 145411,
+      "total_acknowledged": 195549,
+      "business_result_log_lines": 195549,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.939377103,
+          "cpu_cores": 1.870566526982821,
+          "write_syscalls_per_second": 24234.864616913346,
+          "written_bytes_per_second": 2187196.700044254,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.939535226,
+          "cpu_cores": 0.8536021434482524,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 10223616
+        }
+      }
+    },
+    {
+      "run": "baseline-2",
+      "throughput_ack_per_second": 24536.833333333332,
+      "p50_ms": 5.166557,
+      "p95_ms": 6.690583,
+      "p99_ms": 7.459758,
+      "max_ms": 50.014806,
+      "measurement_samples": 147221,
+      "total_acknowledged": 196854,
+      "business_result_log_lines": 196854,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.825595768,
+          "cpu_cores": 1.8950851448778379,
+          "write_syscalls_per_second": 24537.91950090554,
+          "written_bytes_per_second": 2214541.0553312525,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.825586265,
+          "cpu_cores": 0.8857477625902086,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 10223616
+        }
+      }
+    },
+    {
+      "run": "baseline-3",
+      "throughput_ack_per_second": 23726.5,
+      "p50_ms": 5.361383,
+      "p95_ms": 6.912225,
+      "p99_ms": 7.710274,
+      "max_ms": 49.062947,
+      "measurement_samples": 142359,
+      "total_acknowledged": 188528,
+      "business_result_log_lines": 188528,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.829036537,
+          "cpu_cores": 1.8802421172746202,
+          "write_syscalls_per_second": 23729.993648519823,
+          "written_bytes_per_second": 2141650.8407107964,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.829140215,
+          "cpu_cores": 0.8526128754307207,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 9961472
+        }
+      }
+    },
+    {
+      "run": "logging-control-1",
+      "throughput_ack_per_second": 24356.166666666668,
+      "p50_ms": 5.213674,
+      "p95_ms": 6.703396,
+      "p99_ms": 7.51932,
+      "max_ms": 49.68818,
+      "measurement_samples": 146137,
+      "total_acknowledged": 195165,
+      "business_result_log_lines": 195165,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.836215423,
+          "cpu_cores": 1.8933502619613638,
+          "write_syscalls_per_second": 24361.677850286578,
+          "written_bytes_per_second": 2198628.9178825608,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.836212101,
+          "cpu_cores": 0.8755679045873662,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 9961472
+        }
+      }
+    },
+    {
+      "run": "logging-control-2",
+      "throughput_ack_per_second": 24607.333333333332,
+      "p50_ms": 5.138971,
+      "p95_ms": 6.715912,
+      "p99_ms": 7.483198,
+      "max_ms": 46.746742,
+      "measurement_samples": 147644,
+      "total_acknowledged": 197158,
+      "business_result_log_lines": 197158,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.93119853,
+          "cpu_cores": 1.908551862282715,
+          "write_syscalls_per_second": 24601.9416247731,
+          "written_bytes_per_second": 2220328.30858555,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.930824996,
+          "cpu_cores": 0.8919501087231204,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 10223616
+        }
+      }
+    },
+    {
+      "run": "logging-control-3",
+      "throughput_ack_per_second": 23984.833333333332,
+      "p50_ms": 5.275903,
+      "p95_ms": 6.93945,
+      "p99_ms": 7.726706,
+      "max_ms": 48.029896,
+      "measurement_samples": 143909,
+      "total_acknowledged": 192557,
+      "business_result_log_lines": 192557,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.957931697,
+          "cpu_cores": 1.8664195169607696,
+          "write_syscalls_per_second": 23993.393558368614,
+          "written_bytes_per_second": 2165390.7188120624,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.958006179,
+          "cpu_cores": 0.876132021883222,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 10223616
+        }
+      }
+    },
+    {
+      "run": "optimized-1",
+      "throughput_ack_per_second": 34975.166666666664,
+      "p50_ms": 3.655182,
+      "p95_ms": 4.744937,
+      "p99_ms": 5.229614,
+      "max_ms": 45.409021,
+      "measurement_samples": 209851,
+      "total_acknowledged": 278948,
+      "business_result_log_lines": 0,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.930081066,
+          "cpu_cores": 1.9004799217023047,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.93004176,
+          "cpu_cores": 1.2512559439379058,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 12058624
+        }
+      }
+    },
+    {
+      "run": "optimized-2",
+      "throughput_ack_per_second": 34518.666666666664,
+      "p50_ms": 3.693939,
+      "p95_ms": 4.886666,
+      "p99_ms": 5.410793,
+      "max_ms": 45.614027,
+      "measurement_samples": 207111,
+      "total_acknowledged": 274651,
+      "business_result_log_lines": 0,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.954005936,
+          "cpu_cores": 1.8609319706932856,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.954229336,
+          "cpu_cores": 1.214262936814767,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 12058624
+        }
+      }
+    },
+    {
+      "run": "optimized-3",
+      "throughput_ack_per_second": 34822.833333333336,
+      "p50_ms": 3.650706,
+      "p95_ms": 4.874717,
+      "p99_ms": 5.498317,
+      "max_ms": 47.681683,
+      "measurement_samples": 208937,
+      "total_acknowledged": 279363,
+      "business_result_log_lines": 0,
+      "resources": {
+        "server": {
+          "sampled_seconds": 5.945701736,
+          "cpu_cores": 1.887077505429714,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 5.94574915,
+          "cpu_cores": 1.2277679087756335,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 12058624
+        }
+      }
+    },
+    {
+      "run": "pilot-baseline",
+      "throughput_ack_per_second": 24362.0,
+      "p50_ms": 5.200892,
+      "p95_ms": 6.757059,
+      "p99_ms": 7.537473,
+      "max_ms": 46.258375,
+      "measurement_samples": 73086,
+      "total_acknowledged": 96593,
+      "business_result_log_lines": 96593,
+      "resources": {
+        "server": {
+          "sampled_seconds": 2.815364602,
+          "cpu_cores": 1.8754231676597604,
+          "write_syscalls_per_second": 24315.855911297702,
+          "written_bytes_per_second": 2194506.52878529,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 2.815133504,
+          "cpu_cores": 0.8347739091808273,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 6553600
+        }
+      }
+    },
+    {
+      "run": "pilot-optimized",
+      "throughput_ack_per_second": 34701.333333333336,
+      "p50_ms": 3.684194,
+      "p95_ms": 4.894819,
+      "p99_ms": 5.367134,
+      "max_ms": 44.910654,
+      "measurement_samples": 104103,
+      "total_acknowledged": 142380,
+      "business_result_log_lines": 0,
+      "resources": {
+        "server": {
+          "sampled_seconds": 2.815033544,
+          "cpu_cores": 1.8791960796613514,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 6815744
+        },
+        "client": {
+          "sampled_seconds": 2.815034696,
+          "cpu_cores": 1.200695680519598,
+          "write_syscalls_per_second": 0.0,
+          "written_bytes_per_second": 0.0,
+          "peak_sampled_rss_bytes": 8126464
+        }
+      }
+    }
+  ],
+  "groups": {
+    "baseline": {
+      "runs": 3,
+      "median_throughput_ack_per_second": 24235.166666666668,
+      "median_p99_ms": 7.595808,
+      "throughput_range": [
+        23726.5,
+        24536.833333333332
+      ],
+      "p99_ms_range": [
+        7.459758,
+        7.710274
+      ]
+    },
+    "optimized": {
+      "runs": 3,
+      "median_throughput_ack_per_second": 34822.833333333336,
+      "median_p99_ms": 5.410793,
+      "throughput_range": [
+        34518.666666666664,
+        34975.166666666664
+      ],
+      "p99_ms_range": [
+        5.229614,
+        5.498317
+      ]
+    },
+    "logging-control": {
+      "runs": 3,
+      "median_throughput_ack_per_second": 24356.166666666668,
+      "median_p99_ms": 7.51932,
+      "throughput_range": [
+        23984.833333333332,
+        24607.333333333332
+      ],
+      "p99_ms_range": [
+        7.483198,
+        7.726706
+      ]
+    }
+  }
+}

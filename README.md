@@ -2,7 +2,7 @@
 
 C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。已完成 **M1、M2.1、M2.2 和 M2.3**：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
 
-本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。现已支持收发全局预算和高低水位背压；WebSocket、gRPC、限流超时和性能实验尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
+本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。现已支持收发全局预算和高低水位背压；已完成一次可复现的 TCP 日志对照实验；WebSocket、gRPC 和限流超时尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
 
 ## Linux 依赖
 
@@ -55,7 +55,7 @@ ctest --preset debug
 # request_id=42 result=OK error=
 ```
 
-Ctrl-C 或 `kill -TERM <pid>` 正常退出。服务端 stdout 输出 spdlog JSON 行，例如 `event=listening/business_result/connection_closed/statistics/stopped`，可以用 `jq` 检索 event、connection_id、request_id 和 reason。客户端是一次请求的同步演示程序，没有重试和网络超时；集成测试给客户端进程设置 5 秒期限。
+Ctrl-C 或 `kill -TERM <pid>` 正常退出。服务端 stdout 输出 spdlog JSON 行，默认 info 保留失败、生命周期及统计；成功请求明细通过 log_level=debug 打开。例如 `event=listening/business_result/connection_closed/statistics/stopped`，可以用 `jq` 检索 event、connection_id、request_id 和 reason。客户端是一次请求的同步演示程序，没有重试和网络超时；集成测试给客户端进程设置 5 秒期限。
 
 Release 和 ASan/UBSan 使用独立目录：
 
@@ -107,6 +107,7 @@ clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/*.cpp
 
 | 字段 | 默认值 | 可配置范围/含义 |
 | --- | --- | --- |
+| log_level | info | info/debug；成功请求明细仅 debug，失败与统计仍为 info |
 | listen_address | 127.0.0.1 | 本机可绑定的 IPv4/IPv6 地址字面值 |
 | port | 9000 | 0..65535；0 让系统分配端口，日志报告实际值 |
 | io_threads | 2 | 1..64，一个 io_context，包括主线程 |
@@ -152,4 +153,18 @@ Dispatcher 使用显式有界队列和固定 worker 执行 Router，完成结果
 
 当前背压路径优先阅读 ResourceBudget::try_frame（src/resource_budget.cpp）、ResourceLease::release（同文件）和 Session::process_buffered_input（src/server.cpp）。分别理解原子准入、最后所有者归还和 strand 恢复顺序；业务线程路径继续阅读 Dispatcher::run_worker。
 
-M2.3 已实现资源释放唤醒和数量/字节高低水位。当前退出丢弃排队任务并关闭连接，不承诺排空 ACK；执行中 Handler 必须有限时返回。尚无资源等待、半包和写超时，慢对端可能长期占用其预算；下一步 M2.4 实现限流、心跳和期限，M2.5 实现 graceful drain。没有压测或 Docker/CI，也没有未经测量的性能数字。
+M2.3 已实现资源释放唤醒和数量/字节高低水位。当前退出丢弃排队任务并关闭连接，不承诺排空 ACK；执行中 Handler 必须有限时返回。尚无资源等待、半包和写超时，慢对端可能长期占用其预算；下一步 M2.4 实现限流、心跳和期限，M2.5 实现 graceful drain。已有下述 TCP 日志实验；Docker/CI 和完整 M4 压测体系尚未实现。
+
+## 已执行的 TCP 性能实验
+
+在固定 16 连接、每连接 8 条在途、256 字节 payload 的闭环负载下，对基线、优化和重新开日志的对照组各执行三轮。三轮中位数：吞吐 24,235 → 34,823 ACK/s，P99 7.596 → 5.411 ms；对照组回到 24,356 ACK/s、7.519 ms。优化是默认关闭逐条成功日志，并在构造 JSON 前检查等级；业务失败和汇总日志保留。
+
+这些数字仅属于本次 WSL2 loopback/Release/闭环环境，不是生产容量或固定外部到达率的 SLO。原始 CSV、日志、配置、命令、哈希和对照解释见 [实验报告](docs/performance/tcp-logging-20261103.md)，正确性检查见 [验证记录](docs/performance/validation-tcp-logging.md)。这次实验没有将 M4 整体标为完成。
+
+已有数据可直接重算：
+
+```bash
+python3 benchmarks/analyze.py experiments/tcp-20261103
+```
+
+重新跑完整矩阵的方法见实验报告；使用新输出目录保留历史记录。

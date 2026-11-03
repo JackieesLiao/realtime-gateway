@@ -275,6 +275,8 @@ TEST(Config, RejectsUnsafeSettingsAndTypos) {
         "{\"port\":65536}",
         "{\"max_send_bytes\":0}",
         "{\"typo\":1}",
+        "{\"log_level\":\"trace\"}",
+        "{\"log_level\":false}",
         "{\"io_threads\":1.5}",
         "{\"business_threads\":0}",
         "{\"max_business_queue_bytes\":0}",

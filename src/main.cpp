@@ -15,6 +15,11 @@ int main(int argc, char** argv) {
 
     try {
         const auto config = gateway::Config::load(argv[1]);
+        if (config.log_level == "debug") {
+            spdlog::set_level(spdlog::level::debug);
+        } else {
+            spdlog::set_level(spdlog::level::info);
+        }
         boost::asio::io_context io;
         auto server = std::make_shared<gateway::Server>(io, config);
         server->start();

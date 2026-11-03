@@ -89,6 +89,10 @@ Session::make_completion 只捕获 weak_ptr、executor 和 work guard。worker �
 
 没有半包、空闲、资源等待和写入期限。慢设备可长期占用有界额度；M2.4 再处理期限，M2.5 再实现 graceful drain。
 
+## 成功日志的开销控制
+
+TCP 日志实验后，成功的 business_result 明细降为 debug，并在构造 JSON 之前检查 spdlog::should_log；默认 info 不构造或输出成功明细。失败结果、生命周期及汇总仍为 info，log_level=debug 可恢复逐请求诊断。日志仍同步执行，没有引入另一条无界异步日志队列；开启明细的成本见 docs/performance/tcp-logging-20261103.md。
+
 ## 优先阅读三个函数
 
 1. ResourceBudget::try_frame（src/resource_budget.cpp）：一次取得三个资源凭证，失败时登记可恢复等待。

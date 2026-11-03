@@ -1,0 +1,17 @@
+{
+  "valid": true,
+  "failure": null,
+  "business_result_log_lines": 192557,
+  "artifacts": [
+    {
+      "path": "server.jsonl.gz",
+      "sha256": "f10bfd74bdfbbddb074fc6b08ee587e3ef7c5b5411f4c6c2895663837f4b5610",
+      "bytes": 563113
+    },
+    {
+      "path": "samples.csv.gz",
+      "sha256": "aec328cc0c7b64a58dc01b60ca423309d769c364aae31d702fe0e6ae7257815e",
+      "bytes": 3163901
+    }
+  ]
+}

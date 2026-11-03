@@ -256,10 +256,19 @@ private:
         {
             realtime::Ack ack;
             ack.Swap(&result.ack);
-            log({{"event", "business_result"},
-                {"connection_id", connection_id_},
-                {"request_id", ack.request_id()},
-                {"result", realtime::Result_Name(ack.result())}});
+            auto result_log_level = spdlog::level::info;
+            if (ack.result() == realtime::OK) {
+                result_log_level = spdlog::level::debug;
+            }
+            // 成功请求不默认逐条打印；禁用时连 JSON 对象和枚举名都不构造。
+            // 业务失败仍为 info，生命周期和汇总统计继续保留。
+            if (spdlog::should_log(result_log_level)) {
+                log({{"event", "business_result"},
+                        {"connection_id", connection_id_},
+                        {"request_id", ack.request_id()},
+                        {"result", realtime::Result_Name(ack.result())}},
+                    result_log_level);
+            }
             queued = enqueue_ack(ack, std::move(result.reply_budget));
             // ACK 对象在此作用域结束时销毁，随后才能归还统一业务预算。
         }

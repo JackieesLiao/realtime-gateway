@@ -1,0 +1,15 @@
+{
+  "budget_bytes": 0,
+  "budget_messages": 0,
+  "budget_pending_wakeups": 0,
+  "budget_waiters": 0,
+  "business_failed": 0,
+  "business_outstanding": 0,
+  "business_outstanding_bytes": 0,
+  "business_queued": 0,
+  "completion_failed": 0,
+  "event": "statistics",
+  "payload_bytes": 49294592,
+  "processed": 192557,
+  "rejected": 0
+}

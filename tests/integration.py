@@ -140,6 +140,21 @@ class TcpIntegration(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('request_id=123 result=OK', result.stdout)
 
+    def test_success_logging_is_optional_but_failures_remain_visible(self):
+        with RunningServer() as server:
+            with server.connect() as sock:
+                sock.sendall(request(1) + request(2, kind=999))
+                ack(sock, 1)
+                ack(sock, 2, pb.UNKNOWN_MESSAGE_TYPE)
+        results = [event for event in server.events if event['event'] == 'business_result']
+        self.assertEqual([event['request_id'] for event in results], [2])
+        with RunningServer(log_level='debug') as server:
+            with server.connect() as sock:
+                sock.sendall(request(3))
+                ack(sock, 3)
+        results = [event for event in server.events if event['event'] == 'business_result']
+        self.assertEqual([event['request_id'] for event in results], [3])
+
     def test_fragmented_header_and_body(self):
         with RunningServer() as server, server.connect() as sock:
             wire = request(7)

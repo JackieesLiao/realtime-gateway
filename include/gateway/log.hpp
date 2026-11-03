@@ -5,8 +5,8 @@
 
 namespace gateway {
 
-inline void log(nlohmann::json fields) {
-    spdlog::info("{}", fields.dump());
+inline void log(nlohmann::json fields, spdlog::level::level_enum level = spdlog::level::info) {
+    spdlog::log(level, "{}", fields.dump());
 }
 
 } // namespace gateway

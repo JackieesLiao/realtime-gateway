@@ -67,6 +67,11 @@ target_link_libraries(gateway_server PRIVATE gateway_core)
 add_executable(device_client src/client.cpp)
 target_link_libraries(device_client PRIVATE gateway_core)
 
+# 独立压测客户端；不引入生产服务端配置或延迟模拟。
+add_executable(gateway_bench benchmarks/gateway_bench.cpp)
+target_link_libraries(gateway_bench PRIVATE gateway_core)
+target_compile_options(gateway_bench PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+
 include(CTest)
 if(BUILD_TESTING)
     find_package(GTest REQUIRED)
@@ -119,4 +124,9 @@ if(BUILD_TESTING)
             "$<TARGET_FILE:device_client>"
     )
     set_tests_properties(socket_integration PROPERTIES TIMEOUT 40)
+    add_test(
+        NAME benchmark_analysis
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_analysis_test.py"
+    )
+    set_tests_properties(benchmark_analysis PROPERTIES TIMEOUT 10)
 endif()
