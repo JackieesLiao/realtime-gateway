@@ -42,6 +42,7 @@ target_include_directories(gateway_proto PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(gateway_proto PUBLIC protobuf::libprotobuf)
 
 add_library(gateway_core
+    src/connection_policy.cpp
     src/resource_budget.cpp
     src/frame.cpp
     src/buffered_input.cpp
@@ -87,6 +88,7 @@ if(BUILD_TESTING)
     endif()
 
     add_executable(gateway_tests
+        tests/connection_policy_test.cpp
         tests/unit.cpp
         tests/buffered_input_test.cpp
         tests/dispatcher_test.cpp

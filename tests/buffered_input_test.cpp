@@ -291,3 +291,28 @@ TEST(BufferedInput, AdmissionMayCloseInputWithoutReportingRecoverablePause) {
     EXPECT_EQ(status, InputStatus::Stopped);
     EXPECT_FALSE(input.can_read());
 }
+
+TEST(BufferedInput, FrameObserverReportsFirstByteAndCompletionOnceAcrossRetries) {
+    std::vector<FrameEvent> events;
+    BufferedInput input(64, 64, [&](FrameEvent event) {
+        events.push_back(event);
+    });
+    const auto wire = encode_frame("hello");
+    const auto accept = [](const auto&) {
+        return FrameDisposition::Accepted;
+    };
+    stage_input(input, wire.substr(0, 2));
+    EXPECT_EQ(input.process(accept), InputStatus::NeedRead);
+    EXPECT_EQ(events, (std::vector<FrameEvent>{FrameEvent::Started}));
+    stage_input(input, wire.substr(2));
+    const auto deny = [](std::size_t) {
+        return false;
+    };
+    EXPECT_EQ(input.process(accept, deny), InputStatus::Paused);
+    EXPECT_EQ(input.process(accept, deny), InputStatus::Paused);
+    EXPECT_EQ(events.size(), 1U);
+    EXPECT_EQ(input.process(accept), InputStatus::NeedRead);
+    EXPECT_EQ(events, (std::vector<FrameEvent>{FrameEvent::Started, FrameEvent::Completed}));
+    EXPECT_EQ(input.process(accept), InputStatus::NeedRead);
+    EXPECT_EQ(events.size(), 2U);
+}

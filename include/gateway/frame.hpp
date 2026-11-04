@@ -37,6 +37,7 @@ public:
     DecodeResult feed(std::span<const char> remaining_bytes, const Admission& admit = {});
     bool has_frame() const;
     bool awaiting_capacity() const;
+    bool has_started_frame() const;
 
     // body() 只借用完整帧，引用有效期截止到 take_body() 或解析器销毁。
     // 两个接口在没有完整帧时都抛出 logic_error，避免误处理半包。

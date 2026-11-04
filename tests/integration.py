@@ -155,6 +155,77 @@ class TcpIntegration(unittest.TestCase):
         results = [event for event in server.events if event['event'] == 'business_result']
         self.assertEqual([event['request_id'] for event in results], [3])
 
+    def test_heartbeat_ack_validation_and_device_client(self):
+        with RunningServer() as server:
+            with server.connect() as sock:
+                sock.sendall(request(1, kind=pb.HEARTBEAT, payload=b''))
+                ack(sock, 1)
+                sock.sendall(request(2, kind=pb.HEARTBEAT, payload=b'not-empty'))
+                ack(sock, 2, pb.INVALID_REQUEST)
+                sock.sendall(request(3))
+                ack(sock, 3)
+            result = subprocess.run([CLIENT, '127.0.0.1', str(server.port), '4', 'heartbeat'],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('request_id=4 result=OK', result.stdout)
+        stats = next(event for event in server.events if event['event'] == 'statistics')
+        self.assertEqual((stats['heartbeats'], stats['processed'], stats['rejected']), (2, 1, 1))
+
+    def test_idle_timer_closes_silent_connection(self):
+        with RunningServer(idle_timeout_ms=150, frame_timeout_ms=0) as server:
+            with server.connect() as sock:
+                closed(sock)
+            server.wait_reason('idle_timeout')
+
+    def test_partial_header_and_body_deadlines(self):
+        # 不要求这些 sendall 对应多少次 recv；两种输入都确定没有完整帧。
+        for data in (b'\x00\x00', struct.pack('!I', 100) + b'partial'):
+            with self.subTest(data=data):
+                with RunningServer(idle_timeout_ms=0, frame_timeout_ms=150) as server:
+                    with server.connect() as sock:
+                        sock.sendall(data)
+                        closed(sock)
+                    server.wait_reason('frame_timeout')
+
+    def test_message_rate_wait_times_out_without_second_execution(self):
+        with RunningServer(rate_messages_per_second=1, rate_message_burst=1,
+                           rate_bytes_per_second=0, idle_timeout_ms=0,
+                           frame_timeout_ms=0, wait_timeout_ms=150) as server:
+            with server.connect() as sock:
+                sock.sendall(request(1) + request(2))
+                ack(sock, 1)
+                closed(sock)
+            server.wait_reason('rate_wait_timeout')
+        stats = next(event for event in server.events if event['event'] == 'statistics')
+        self.assertEqual(stats['processed'], 1)
+
+    def test_message_rate_timer_resumes_buffered_requests_in_order(self):
+        with RunningServer(rate_messages_per_second=20, rate_message_burst=1,
+                           rate_bytes_per_second=0, idle_timeout_ms=0,
+                           wait_timeout_ms=2000) as server:
+            with server.connect() as sock:
+                sock.sendall(b''.join(request(rid) for rid in range(1, 5)))
+                for rid in range(1, 5):
+                    ack(sock, rid)
+
+    def test_byte_rate_is_independent_of_message_rate(self):
+        body_bytes = len(request(1)) - 4
+        with RunningServer(rate_messages_per_second=0, rate_bytes_per_second=1,
+                           rate_byte_burst=body_bytes, idle_timeout_ms=0,
+                           frame_timeout_ms=0, wait_timeout_ms=150) as server:
+            with server.connect() as sock:
+                sock.sendall(request(1) + request(2))
+                ack(sock, 1)
+                closed(sock)
+            server.wait_reason('rate_wait_timeout')
+
+    def test_rate_burst_impossible_is_rejected_from_header(self):
+        with RunningServer(rate_bytes_per_second=1, rate_byte_burst=50) as server:
+            with server.connect() as sock:
+                sock.sendall(struct.pack('!I', 100))
+                closed(sock)
+            server.wait_reason('rate_capacity')
+
     def test_fragmented_header_and_body(self):
         with RunningServer() as server, server.connect() as sock:
             wire = request(7)

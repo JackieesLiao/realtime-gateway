@@ -102,6 +102,10 @@ bool FrameDecoder::awaiting_capacity() const {
     return error_.empty() && expected_body_bytes_ != 0 && !body_admitted_;
 }
 
+bool FrameDecoder::has_started_frame() const {
+    return header_bytes_received_ != 0;
+}
+
 bool FrameDecoder::has_frame() const {
     return error_.empty() && expected_body_bytes_ != 0 && body_.size() == expected_body_bytes_;
 }

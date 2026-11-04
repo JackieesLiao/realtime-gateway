@@ -354,3 +354,27 @@ TEST(ResourceBudget, ByteLatchDoesNotResumeMerelyBecauseMessageCountIsLow) {
     budget.close(connection->account);
     wakeups.clear();
 }
+
+TEST(ResourceBudget, CancellingWaitForLocalRateTimerLetsNextWaiterAdvance) {
+    auto limits = small_limits();
+    limits.total.messages = 3;
+    ResourceBudget budget(limits);
+    auto owner = budget.open(1);
+    auto rate_waiter = budget.open(2);
+    auto ready_waiter = budget.open(3);
+    std::deque<WakeupTicket> wakeups;
+    collect_wakeups(budget, *rate_waiter, wakeups);
+    collect_wakeups(budget, *ready_waiter, wakeups);
+    auto frame = budget.try_frame(owner->account, 100);
+    EXPECT_EQ(budget.try_frame(rate_waiter->account, 100).status, BudgetStatus::Waiting);
+    EXPECT_EQ(budget.try_frame(ready_waiter->account, 100).status, BudgetStatus::Waiting);
+    budget.cancel_wait(rate_waiter->account);
+    EXPECT_EQ(budget.snapshot().budget_waiters, 1U);
+    frame = {};
+    auto next = budget.try_frame(ready_waiter->account, 100);
+    EXPECT_EQ(next.status, BudgetStatus::Acquired);
+    budget.close(owner->account);
+    budget.close(rate_waiter->account);
+    budget.close(ready_waiter->account);
+    wakeups.clear();
+}

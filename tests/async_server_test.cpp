@@ -186,6 +186,21 @@ public:
         }
     }
 
+    // 真实 timer 桥接测试使用明确的计时里程碑；不用于猜测业务队列或 TCP 分包。
+    void wait_for_io_timer(std::chrono::milliseconds duration) {
+        auto timer = std::make_shared<asio::steady_timer>(io_, duration);
+        auto reached = std::make_shared<std::promise<void>>();
+        auto future = reached->get_future();
+        timer->async_wait([timer, reached](const auto& error) {
+            if (!error) {
+                reached->set_value();
+            }
+        });
+        if (future.wait_for(3s) != std::future_status::ready) {
+            throw std::runtime_error("test timer did not complete");
+        }
+    }
+
     void stop() {
         server_->stop();
     }
@@ -536,4 +551,66 @@ TEST(AsyncServer, StopWithExecutingQueuedAndCapacityWaitingTasksReturnsAllBudget
     server.finish();
     EXPECT_EQ(gate->entered(), (std::vector<std::uint64_t>{1}));
     EXPECT_EQ(server.budget_snapshot().total.bytes, 0U);
+}
+
+TEST(AsyncServer, ResourceWaitDeadlineClosesOnlyWaiterAndRefundsBudget) {
+    auto config = test_config();
+    config.global_receive.messages = 1;
+    config.connection.timeout = {0ms, 0ms, 150ms, 0ms};
+    RunningServer server(config, [](const auto&) {
+        realtime::Ack ack;
+        return ack;
+    });
+    Client first(server.port());
+    const auto wire = request_frame(1);
+    first.send(wire.substr(0, 6));
+    ASSERT_TRUE(server.wait_for_budget([](const auto& budget) {
+        return budget.used[1].messages == 1;
+    }));
+    Client second(server.port());
+    second.send(request_frame(2));
+    EXPECT_TRUE(second.is_closed());
+    first.send(wire.substr(6));
+    EXPECT_EQ(first.receive_ack().request_id(), 1U);
+    server.finish();
+    EXPECT_EQ(server.budget_snapshot().total.bytes, 0U);
+}
+
+TEST(AsyncServer, IdleTimeoutDuringBusinessDiscardsLateResultSafely) {
+    auto config = test_config();
+    config.connection.timeout = {150ms, 0ms, 0ms, 0ms};
+    auto gate = std::make_shared<BusinessGate>();
+    RunningServer server(
+        config,
+        [gate](const auto& request) {
+            return gate->execute(request);
+        },
+        gate);
+    Client client(server.port());
+    client.send(request_frame(1));
+    ASSERT_TRUE(gate->wait_first());
+    EXPECT_TRUE(client.is_closed());
+    EXPECT_EQ(server.snapshot().outstanding_messages, 1U);
+    gate->open();
+    server.finish();
+    EXPECT_EQ(server.snapshot().outstanding_messages, 0U);
+}
+
+TEST(AsyncServer, RefreshedIdleDeadlineSurvivesOldTimerWakeup) {
+    auto config = test_config();
+    config.connection.timeout = {1000ms, 0ms, 0ms, 0ms};
+    RunningServer server(config, [](const auto&) {
+        realtime::Ack ack;
+        return ack;
+    });
+    Client client(server.port());
+    client.send(request_frame(1));
+    EXPECT_EQ(client.receive_ack().request_id(), 1U);
+    server.wait_for_io_timer(400ms);
+    client.send(request_frame(2));
+    EXPECT_EQ(client.receive_ack().request_id(), 2U);
+    // 超过原 1 秒期限，仍在第二次有效消息的新期限内。
+    server.wait_for_io_timer(700ms);
+    client.send(request_frame(3));
+    EXPECT_EQ(client.receive_ack().request_id(), 3U);
 }

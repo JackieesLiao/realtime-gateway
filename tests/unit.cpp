@@ -286,6 +286,11 @@ TEST(Config, RejectsUnsafeSettingsAndTypos) {
         "{\"global_budget_messages\":2}",
         "{\"global_budget_bytes\":4096}",
         "{\"global_receive_messages\":0}",
+        "{\"rate_message_burst\":0}",
+        "{\"rate_byte_burst\":1073741825}",
+        "{\"rate_bytes_per_second\":1000000001}",
+        "{\"idle_timeout_ms\":-1}",
+        "{\"write_timeout_ms\":3600001}",
     };
 
     for (const auto& document : invalid_configs) {
@@ -338,4 +343,25 @@ TEST(Protobuf, CanonicalRequestCostCanExceedReceivedBodyButFitsPadding) {
     ASSERT_TRUE(request.ParseFromString(body));
     EXPECT_GT(request.ByteSizeLong(), body.size());
     EXPECT_LE(request.ByteSizeLong(), body.size() + request_reserve_padding);
+}
+
+TEST(Business, HeartbeatUsesSameValidationAndSeparateStatistics) {
+    Statistics stats;
+    Router router(stats);
+    auto request = valid_request();
+    request.set_message_type(realtime::HEARTBEAT);
+    request.clear_payload();
+    EXPECT_EQ(validate_request(request), realtime::OK);
+    const auto ack = router.route(request);
+    EXPECT_EQ(ack.request_id(), request.request_id());
+    EXPECT_EQ(ack.result(), realtime::OK);
+    EXPECT_EQ(stats.heartbeats.load(), 1U);
+    EXPECT_EQ(stats.processed.load(), 0U);
+    EXPECT_EQ(stats.payload_bytes.load(), 0U);
+    request.set_payload("not empty");
+    EXPECT_EQ(router.route(request).result(), realtime::INVALID_REQUEST);
+    request.clear_payload();
+    request.set_request_id(0);
+    EXPECT_EQ(router.route(request).result(), realtime::INVALID_REQUEST);
+    EXPECT_EQ(stats.rejected.load(), 2U);
 }

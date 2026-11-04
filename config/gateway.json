@@ -20,5 +20,13 @@
     "global_budget_messages": 8192,
     "global_budget_bytes": 134217728,
     "backpressure_high_percent": 80,
-    "backpressure_low_percent": 50
+    "backpressure_low_percent": 50,
+    "rate_messages_per_second": 10000,
+    "rate_message_burst": 1000,
+    "rate_bytes_per_second": 16777216,
+    "rate_byte_burst": 16777216,
+    "idle_timeout_ms": 60000,
+    "frame_timeout_ms": 10000,
+    "wait_timeout_ms": 5000,
+    "write_timeout_ms": 5000
 }

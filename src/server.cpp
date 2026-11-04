@@ -38,10 +38,21 @@ public:
         std::uint64_t connection_id,
         std::function<void()> on_close)
         : socket_(std::move(socket)),
+          deadline_timer_(socket_.get_executor()),
+          policy_(config.connection, PolicyClock::now()),
           budgets_(std::move(budgets)),
           account_(std::move(connection_budget.account)),
           read_reservation_(std::move(connection_budget.read)),
-          input_(config.max_body_bytes, config.max_receive_body_bytes),
+          input_(config.max_body_bytes,
+              config.max_receive_body_bytes,
+              [this](FrameEvent event) {
+                  if (event == FrameEvent::Started) {
+                      policy_.frame_started(input_arrival_);
+                  } else {
+                      policy_.frame_completed();
+                      completed_arrival_ = input_received_at_;
+                  }
+              }),
           sends_(config.max_send_messages, config.max_send_bytes),
           dispatcher_(dispatcher),
           max_task_bytes_(std::min(
@@ -49,6 +60,12 @@ public:
           connection_id_(connection_id),
           on_close_(std::move(on_close)) {
     }
+
+    // 成员观察回调借用 this，异步缓冲地址固定，Session 不允许复制或移动。
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
+    Session(Session&&) = delete;
+    Session& operator=(Session&&) = delete;
 
     void start() {
         const auto executor = socket_.get_executor();
@@ -75,13 +92,23 @@ public:
     void pause_reading() {
         asio::dispatch(socket_.get_executor(), [self = shared_from_this()] {
             self->reading_paused_ = true;
+            self->policy_.pause_peer(true, PolicyClock::now());
+            self->refresh_timer();
         });
     }
 
     void resume_reading() {
         asio::dispatch(socket_.get_executor(), [self = shared_from_this()] {
+            if (self->closed_ || self->business_in_progress_) {
+                return;
+            }
+            self->policy_.pause_peer(false, PolicyClock::now());
+            if (self->expire_if_needed()) {
+                return;
+            }
             self->reading_paused_ = false;
             self->process_buffered_input();
+            self->refresh_timer();
         });
     }
 
@@ -94,9 +121,11 @@ private:
 
         // 已准入的半帧必须可以收齐，不能被它自己占用的高水位卡住。
         if (!incoming_.receive && !budgets_.allow_read(account_)) {
-            reading_paused_ = true;
+            policy_.wait_for(WaitReason::Resource, PolicyClock::now());
+            pause_reading();
             return;
         }
+        policy_.finish_wait();
 
         // 整块缓冲已在接入时预留，覆盖在途 read 可能返回的全部数据。
         // 固定缓冲的所有权持续到读回调；旧输入未消费完时绝不覆盖它。
@@ -106,6 +135,7 @@ private:
             [self = shared_from_this()](Error error, std::size_t bytes_received) {
                 self->handle_read(error, bytes_received);
             });
+        refresh_timer();
     }
 
     void handle_read(Error error, std::size_t bytes_received) {
@@ -123,9 +153,16 @@ private:
             return;
         }
 
+        if (expire_if_needed()) {
+            return;
+        }
+        // 一个读块里的尾部帧复用到达时的时间，不能在恢复时重新开始计时。
+        input_received_at_ = PolicyClock::now();
+        input_arrival_ = policy_.peer_time(input_received_at_);
         // 即使暂停已经设置，在途读返回的数据也先保存在固定缓冲中。
         input_.commit_read(bytes_received);
         process_buffered_input();
+        refresh_timer();
     }
 
     void process_buffered_input() {
@@ -150,7 +187,7 @@ private:
             });
 
         if (status == InputStatus::Paused) {
-            reading_paused_ = true;
+            pause_reading();
             return;
         }
 
@@ -166,10 +203,31 @@ private:
     }
 
     bool admit_frame(std::size_t body_bytes) {
+        // 当前业务完成后自带恢复事件，不为它创建另一个资源等待者。
+        if (business_in_progress_ || closed_) {
+            return false;
+        }
+        const auto now = PolicyClock::now();
+        const auto rate = policy_.check_rate(body_bytes, now);
+        if (!rate.possible) {
+            close("rate_capacity");
+            return false;
+        }
+        if (rate.retry_at > now) {
+            // 本地定时器接手恢复，撤销全局等待，避免占住公平调度的队首。
+            budgets_.cancel_wait(account_);
+            policy_.wait_for_rate(rate.retry_at, now);
+            return false;
+        }
         auto admission = budgets_.try_frame(account_, body_bytes);
         if (admission.status == BudgetStatus::Acquired) {
             incoming_ = std::move(admission.reservation);
+            policy_.consume_rate(body_bytes, now);
+            policy_.finish_wait();
             return true;
+        }
+        if (admission.status == BudgetStatus::Waiting) {
+            policy_.wait_for(WaitReason::Resource, now);
         }
         if (admission.status == BudgetStatus::Impossible) {
             switch (admission.failure) {
@@ -205,10 +263,15 @@ private:
             }
             // 按包头保守预留，解析后只缩小；重复唤醒不再解析同一份 protobuf。
             incoming_.task.business.shrink_bytes(request_bytes + max_ack_frame_bytes);
+            if (validate_request(*pending_request_) == realtime::OK) {
+                // 只有完整、业务合法的请求刷新空闲期限；重复唤醒不重复刷新。
+                policy_.valid_request(completed_arrival_);
+            }
         }
 
         const auto turn = budgets_.queue_turn(account_);
         if (!turn.allowed) {
+            policy_.wait_for(WaitReason::Resource, PolicyClock::now());
             return FrameDisposition::Paused;
         }
         const auto status =
@@ -216,6 +279,7 @@ private:
         if (status == SubmitStatus::Full) {
             // 资源和 Request 留在连接中；队列释放事件唤醒，无主动重试循环。
             budgets_.wait_queue(account_, turn.epoch);
+            policy_.wait_for(WaitReason::Resource, PolicyClock::now());
             return FrameDisposition::Paused;
         }
         if (status == SubmitStatus::Stopping) {
@@ -224,6 +288,7 @@ private:
         }
 
         budgets_.queue_accepted(account_);
+        policy_.finish_wait();
         business_in_progress_ = true;
         pause_reading();
         return FrameDisposition::Accepted;
@@ -247,7 +312,7 @@ private:
 
     void handle_business_result(BusinessResult result) {
         // 这里只能运行在连接 strand。关闭后的结果直接丢弃，不再发送 ACK。
-        if (closed_) {
+        if (closed_ || expire_if_needed()) {
             return;
         }
 
@@ -314,11 +379,13 @@ private:
         // close() can clear the queue before cancellation completes. The callback must own
         // the active buffer separately, as well as keeping this Session alive.
         auto frame = sends_.front();
+        policy_.write_started(PolicyClock::now());
         asio::async_write(socket_,
             asio::buffer(frame->bytes),
             [self = shared_from_this(), frame](Error error, std::size_t) {
                 self->handle_write(error);
             });
+        refresh_timer();
     }
 
     void handle_write(Error error) {
@@ -331,10 +398,68 @@ private:
             return;
         }
 
+        policy_.write_finished();
         sends_.pop();
         if (!sends_.empty()) {
             write();
         }
+        refresh_timer();
+    }
+
+    bool expire_if_needed() {
+        const auto expired = policy_.expired(PolicyClock::now());
+        if (expired == TimeoutReason::None) {
+            return false;
+        }
+        close(timeout_name(expired));
+        return true;
+    }
+
+    void refresh_timer() {
+        if (closed_) {
+            return;
+        }
+        const auto next = policy_.next_deadline(PolicyClock::now());
+        // 延后的期限不反复 cancel/rearm：旧唤醒到来时重新检查实际策略即可。
+        if (armed_deadline_ && next && *armed_deadline_ <= *next) {
+            return;
+        }
+        if (armed_deadline_ == next) {
+            return;
+        }
+        ++timer_generation_;
+        Error ignored;
+        deadline_timer_.cancel(ignored);
+        armed_deadline_ = next;
+        if (!next) {
+            return;
+        }
+        deadline_timer_.expires_at(*next);
+        const auto generation = timer_generation_;
+        deadline_timer_.async_wait([weak = weak_from_this(), generation](Error error) {
+            if (auto self = weak.lock()) {
+                self->handle_timer(error, generation);
+            }
+        });
+    }
+
+    void handle_timer(Error error, std::uint64_t generation) {
+        if (closed_ || generation != timer_generation_ || error == asio::error::operation_aborted) {
+            return;
+        }
+        armed_deadline_.reset();
+        if (error) {
+            close("timer_error");
+            return;
+        }
+        // 不能把“旧 timer 到期”直接当成“当前连接超时”。
+        if (expire_if_needed()) {
+            return;
+        }
+        if (policy_.take_rate_wakeup(PolicyClock::now())) {
+            resume_reading();
+        }
+        refresh_timer();
     }
 
     void close(const std::string& reason) {
@@ -345,7 +470,10 @@ private:
         input_.stop();
         budgets_.close(account_);
 
+        ++timer_generation_;
+        armed_deadline_.reset();
         Error ignored_error;
+        deadline_timer_.cancel(ignored_error);
         socket_.cancel(ignored_error);
         socket_.shutdown(tcp::socket::shutdown_both, ignored_error);
         socket_.close(ignored_error);
@@ -359,6 +487,13 @@ private:
 
     // Every member below is accessed on the socket's dedicated connection strand.
     tcp::socket socket_;
+    asio::steady_timer deadline_timer_;
+    ConnectionPolicy policy_;
+    PeerTime input_arrival_{};
+    PolicyTime input_received_at_{};
+    PolicyTime completed_arrival_{};
+    std::optional<PolicyTime> armed_deadline_;
+    std::uint64_t timer_generation_ = 0;
     ResourceBudget budgets_;
     std::shared_ptr<BudgetAccount> account_;
     // 先声明凭证、后声明数据，保证逆序销毁时数据先释放。
@@ -390,6 +525,7 @@ Server::Server(asio::io_context& io, Config config, Dispatcher::Handler handler)
       dispatcher_(config_.business_threads,
           config_.task_queue_limits(),
           make_business_handler(router_, std::move(handler))) {
+    ConnectionPolicy validated(config_.connection, PolicyClock::now());
     const tcp::endpoint endpoint(asio::ip::make_address(config_.listen_address), config_.port);
     acceptor_.open(endpoint.protocol());
     acceptor_.set_option(tcp::acceptor::reuse_address(true));
@@ -483,6 +619,7 @@ void Server::report_statistics() const {
     log({{"event", "statistics"},
         {"processed", stats_.processed.load()},
         {"rejected", stats_.rejected.load()},
+        {"heartbeats", stats_.heartbeats.load()},
         {"payload_bytes", stats_.payload_bytes.load()},
         {"business_queued", business.queued_messages},
         {"business_outstanding", business.outstanding_messages},

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gateway/bounded_task_queue.hpp"
+#include "gateway/connection_policy.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +17,7 @@ struct Config {
     std::size_t max_connections = 1024;
     std::size_t business_threads = 2;
     TaskQueueLimits business_queue;
+    ConnectionLimits connection;
     ResourceUsage global_receive{256, 64 * 1024 * 1024};
     ResourceUsage global_send{4096, 16 * 1024 * 1024};
     ResourceUsage global_budget{8192, 128 * 1024 * 1024};

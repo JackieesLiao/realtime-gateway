@@ -4,6 +4,8 @@ package realtime;
 enum MessageType {
     MESSAGE_TYPE_UNSPECIFIED = 0;
     TELEMETRY = 1;
+    // 心跳沿用 Request/ACK；payload 必须为空，仍消耗限流和资源额度。
+    HEARTBEAT = 2;
 }
 message Request {
     uint64 request_id = 1;

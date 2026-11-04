@@ -9,6 +9,8 @@
 
 namespace gateway {
 
+enum class FrameEvent { Started, Completed };
+
 enum class FrameDisposition {
     Accepted, // 消费者已经处理完，或持有后续处理需要的数据副本。
     Paused,   // 尚未接管消息体，保留它等待下一次 process。
@@ -28,7 +30,10 @@ class BufferedInput {
 public:
     using Consumer = std::function<FrameDisposition(const std::string&)>;
 
-    BufferedInput(std::size_t max_body_bytes, std::size_t receive_body_capacity);
+    using Observer = std::function<void(FrameEvent)>;
+
+    BufferedInput(
+        std::size_t max_body_bytes, std::size_t receive_body_capacity, Observer observe = {});
 
     // 只有旧输入全部消费且没有待处理完整帧时，才允许复用固定读缓冲。
     std::span<char> writable_buffer();
@@ -48,6 +53,8 @@ public:
     const std::string& error() const;
 
 private:
+    // Observer 只借用所属 Session，不逃逸到异步操作；与输入状态一起销毁。
+    Observer observe_;
     FrameDecoder decoder_;
     std::array<char, read_buffer_bytes> read_buffer_{};
 

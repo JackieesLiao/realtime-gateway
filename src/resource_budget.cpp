@@ -510,7 +510,7 @@ void ResourceBudget::wait_queue(
     dispatch(std::move(notification));
 }
 
-void ResourceBudget::queue_accepted(const std::shared_ptr<BudgetAccount>& account) {
+void ResourceBudget::cancel_wait(const std::shared_ptr<BudgetAccount>& account) {
     std::optional<BudgetNotification> notification;
     {
         std::lock_guard lock(state_->mutex);
@@ -518,6 +518,10 @@ void ResourceBudget::queue_accepted(const std::shared_ptr<BudgetAccount>& accoun
         notification = state_->next_notification();
     }
     dispatch(std::move(notification));
+}
+
+void ResourceBudget::queue_accepted(const std::shared_ptr<BudgetAccount>& account) {
+    cancel_wait(account);
 }
 
 void ResourceBudget::notify_task_capacity() const {

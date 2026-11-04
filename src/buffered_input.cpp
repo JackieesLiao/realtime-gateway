@@ -1,11 +1,13 @@
 #include "gateway/buffered_input.hpp"
 
 #include <stdexcept>
+#include <utility>
 
 namespace gateway {
 
-BufferedInput::BufferedInput(std::size_t max_body_bytes, std::size_t receive_body_capacity)
-    : decoder_(max_body_bytes, receive_body_capacity) {
+BufferedInput::BufferedInput(
+    std::size_t max_body_bytes, std::size_t receive_body_capacity, Observer observe)
+    : observe_(std::move(observe)), decoder_(max_body_bytes, receive_body_capacity) {
 }
 
 std::span<char> BufferedInput::writable_buffer() {
@@ -72,9 +74,18 @@ InputStatus BufferedInput::process(const Consumer& consume_body,
         // read_buffer_.data() 指向缓冲区的第 0 个字节,加上 input_begin_，就是从第几个字节开始：
         const std::span<const char> remaining_bytes(
             read_buffer_.data() + input_begin_, input_end_ - input_begin_);
+        if (!remaining_bytes.empty() && !decoder_.has_started_frame() && observe_) {
+            observe_(FrameEvent::Started);
+            if (stopped_) {
+                return InputStatus::Stopped;
+            }
+        }
         const auto result = decoder_.feed(remaining_bytes, admit);
         input_begin_ += result.consumed_bytes;
 
+        if (result.status == DecodeStatus::FrameReady && observe_) {
+            observe_(FrameEvent::Completed);
+        }
         if (stopped_) {
             return InputStatus::Stopped;
         }

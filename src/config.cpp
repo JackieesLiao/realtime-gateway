@@ -70,6 +70,31 @@ Config Config::load(const std::string& path) {
         } else if (key == "max_business_outstanding_bytes") {
             require_range(1, 256 * 1024 * 1024);
             config.business_queue.outstanding_bytes = numeric_value;
+        } else if (key == "rate_messages_per_second") {
+            require_range(0, 1000000000);
+            config.connection.rate.messages_per_second = numeric_value;
+        } else if (key == "rate_message_burst") {
+            require_range(1, 1024 * 1024 * 1024);
+            config.connection.rate.message_burst = numeric_value;
+        } else if (key == "rate_bytes_per_second") {
+            require_range(0, 1000000000);
+            config.connection.rate.bytes_per_second = numeric_value;
+        } else if (key == "rate_byte_burst") {
+            require_range(1, 1024 * 1024 * 1024);
+            config.connection.rate.byte_burst = numeric_value;
+        } else if (key == "idle_timeout_ms" || key == "frame_timeout_ms" ||
+                   key == "wait_timeout_ms" || key == "write_timeout_ms") {
+            require_range(0, 3600000);
+            const std::chrono::milliseconds duration(static_cast<std::int64_t>(numeric_value));
+            if (key == "idle_timeout_ms") {
+                config.connection.timeout.idle = duration;
+            } else if (key == "frame_timeout_ms") {
+                config.connection.timeout.frame = duration;
+            } else if (key == "wait_timeout_ms") {
+                config.connection.timeout.wait = duration;
+            } else {
+                config.connection.timeout.write = duration;
+            }
         } else if (key == "global_receive_messages") {
             require_range(1, 1000000);
             config.global_receive.messages = numeric_value;
@@ -113,6 +138,7 @@ Config Config::load(const std::string& path) {
 
     // 统一校验水位关系和固定读块的全局保留空间，不分配网络缓冲。
     ResourceBudget validated(config.budget_limits());
+    ConnectionPolicy policy(config.connection, PolicyClock::now());
     return config;
 }
 

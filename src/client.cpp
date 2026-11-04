@@ -9,8 +9,8 @@
 #include <boost/asio.hpp>
 
 int main(int argc, char** argv) {
-    if (argc < 3 || argc > 4) {
-        std::cerr << "usage: device_client HOST PORT [REQUEST_ID]\n";
+    if (argc < 3 || argc > 5) {
+        std::cerr << "usage: device_client HOST PORT [REQUEST_ID] [telemetry|heartbeat]\n";
         return 2;
     }
 
@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
         using tcp = asio::ip::tcp;
 
         std::uint64_t request_id = 1;
-        if (argc == 4) {
+        if (argc >= 4) {
             request_id = std::stoull(argv[3]);
         }
         if (request_id == 0) {
@@ -36,6 +36,15 @@ int main(int argc, char** argv) {
         request.set_device_id("simulator-1");
         request.set_message_type(realtime::TELEMETRY);
         request.set_payload("position=1,2,3");
+        if (argc == 5) {
+            const std::string mode(argv[4]);
+            if (mode == "heartbeat") {
+                request.set_message_type(realtime::HEARTBEAT);
+                request.clear_payload();
+            } else if (mode != "telemetry") {
+                throw std::runtime_error("mode must be telemetry or heartbeat");
+            }
+        }
 
         const auto request_frame = gateway::encode_frame(request.SerializeAsString());
         asio::write(socket, asio::buffer(request_frame));

@@ -132,6 +132,8 @@ public:
     // 队列有自己的锁，epoch 解决 try_submit 失败与登记等待之间的释放竞态。
     QueueTurn queue_turn(const std::shared_ptr<BudgetAccount>& account);
     void wait_queue(const std::shared_ptr<BudgetAccount>& account, std::uint64_t observed_epoch);
+    // 限流等待改由本地定时器负责时，撤销旧的全局等待，避免阻挡其他连接。
+    void cancel_wait(const std::shared_ptr<BudgetAccount>& account);
     void queue_accepted(const std::shared_ptr<BudgetAccount>& account);
     void notify_task_capacity() const;
 

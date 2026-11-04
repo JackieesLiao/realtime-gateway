@@ -1,8 +1,8 @@
 # realtime-gateway
 
-C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。已完成 **M1、M2.1、M2.2 和 M2.3**：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
+C++20 实时遥测网关的独立学习重建版本，用于理解实现、面试演示和后续可复现性能实验。已完成 **M1、M2.1、M2.2、M2.3 和 M2.4**：设备模拟器 → TCP → 长度帧 → protobuf → 校验/计数 → 携带 request_id 的 ACK。
 
-本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。现已支持收发全局预算和高低水位背压；已完成一次可复现的 TCP 日志对照实验；WebSocket、gRPC 和限流超时尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
+本仓库的实现与验证记录从本次重建开始，不包含其他电脑上的公司项目代码或历史性能结论。现已支持收发全局预算和高低水位背压；已完成一次可复现的 TCP 日志对照实验；现已实现每连接限流、心跳与超时；WebSocket、gRPC 和优雅排空尚未实现，验收计划见 [ROADMAP](ROADMAP.md)。
 
 ## Linux 依赖
 
@@ -53,6 +53,9 @@ ctest --preset debug
 ```bash
 ./build/debug/device_client 127.0.0.1 9000 42
 # request_id=42 result=OK error=
+
+# 单次应用心跳，payload 为空；响应仍携带 request_id。
+./build/debug/device_client 127.0.0.1 9000 43 heartbeat
 ```
 
 Ctrl-C 或 `kill -TERM <pid>` 正常退出。服务端 stdout 输出 spdlog JSON 行，默认 info 保留失败、生命周期及统计；成功请求明细通过 log_level=debug 打开。例如 `event=listening/business_result/connection_closed/statistics/stopped`，可以用 `jq` 检索 event、connection_id、request_id 和 reason。客户端是一次请求的同步演示程序，没有重试和网络超时；集成测试给客户端进程设置 5 秒期限。
@@ -68,7 +71,7 @@ cmake --build --preset asan
 ctest --preset asan
 ```
 
-ASan preset 同时启用 AddressSanitizer、UndefinedBehaviorSanitizer 和 leak 检查，使用非 PIE 的测试可执行文件以固定地址布局。系统 apt 动态库未重新用 sanitizer 编译。测试失败会返回非零；不会因 socket 权限不足而静默跳过。受限执行环境若不允许创建 loopback socket，需要允许本地 socket 后重新运行集成测试。最新真实命令及结果见 [M2.3 验证记录](docs/validation-m2.3.md)。
+ASan preset 同时启用 AddressSanitizer、UndefinedBehaviorSanitizer 和 leak 检查，使用非 PIE 的测试可执行文件以固定地址布局。系统 apt 动态库未重新用 sanitizer 编译。测试失败会返回非零；不会因 socket 权限不足而静默跳过。受限执行环境若不允许创建 loopback socket，需要允许本地 socket 后重新运行集成测试。最新真实命令及结果见 [M2.4 验证记录](docs/validation-m2.4.md)。
 
 TSan 使用单独目录，不能与 ASan 同时启用：
 
@@ -126,6 +129,14 @@ clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/*.cpp
 | global_budget_messages / bytes | 8192 / 134217728 | 各阶段凭证合计，数量 3..1000000，字节 1..16 GiB |
 | backpressure_high_percent | 80 | 1..99，任一数量/字节指标达到高水位后暂停 |
 | backpressure_low_percent | 50 | 0..98，必须小于 high；相关指标均降至低水位后恢复 |
+| rate_messages_per_second | 10000 | 0..1000000000，每连接消息补充速率；0 禁用此项 |
+| rate_message_burst | 1000 | 1..1073741824，每连接消息突发额度 |
+| rate_bytes_per_second | 16777216 | 0..1000000000，每连接消息体字节补充速率；0 禁用此项 |
+| rate_byte_burst | 16777216 | 1..1073741824，消息体字节突发额度，不含 TCP 头 |
+| idle_timeout_ms | 60000 | 0..3600000，距完整合法请求到达的墙钟期限 |
+| frame_timeout_ms | 10000 | 0..3600000，单帧从首字节起的期限，扣除服务端暂停 |
+| wait_timeout_ms | 5000 | 0..3600000，一次限流/资源等待的墙钟期限 |
+| write_timeout_ms | 5000 | 0..3600000，一条 ACK 写链的墙钟期限 |
 
 业务 Accepted 后，同连接暂停后续投递和新读，结果回到 strand 后恢复已有输入。容量暂时不足时保留输入并等待资源释放事件，不主动循环重试；单帧即使独占资源也无法容纳时关闭连接。协议和单连接两个 body 限制中较小者生效。
 
@@ -134,6 +145,10 @@ clang-format --dry-run --Werror include/gateway/*.hpp src/*.cpp tests/*.cpp
 合法包头的长度为 L 时，先原子预留接收 L、业务 L+16+256、发送 256 字节，再允许分配消息体。业务额外空间覆盖 protobuf 规范化和 Request/ACK 的短暂并存；ACK 线帧最多 256 字节。统一预算数量是接收/业务/发送阶段凭证数之和，一帧准入时占 3 个，固定读块以连接数限制、不增加消息计数。详细缩减与释放过程见架构文档。
 
 原有业务 queued/outstanding 字节仍以 Request::ByteSizeLong() 计费。统一业务预算上限由 outstanding 字节上限加 `outstanding_messages * (16+256)` 推导，覆盖待投递请求和完成结果；它和队列统计的含义不同。所有字节预算都是逻辑数据上界，不是精确 RSS，不包含分配器及 protobuf 对象开销或任意 Handler 内部的临时分配。
+
+消息和字节令牌必须同时满足；合法包头先检查令牌，再申请 M2.3 的全部资源，成功后只扣费一次。临时不足由定时器恢复已有输入；即使独占令牌桶也装不下的帧关闭，reason=rate_capacity。rate_byte_burst 小于 max_body_bytes 是允许的，但会永久拒绝大于 burst 的帧；关闭字节限流时不受此项约束。
+
+四种 timeout 的 0 均表示禁用，消息/字节速率也可分别禁用。心跳仍走完整预算、限流、队列和 ACK 路径：request_id 非零、device_id 合法、message_type=HEARTBEAT、payload 为空；不支持自动发送心跳。有效遥测或心跳才刷新空闲活动时间，不能靠垃圾字节续命。空闲、等待和写入使用墙钟时间，半包才扣除服务端暂停；执行时间较长的业务需相应配置 idle_timeout_ms，连接超时不会强杀正在运行的 Handler。
 
 ## 关键设计
 
@@ -150,16 +165,20 @@ Dispatcher 使用显式有界队列和固定 worker 执行 Router，完成结果
 - [M2.2 验证记录](docs/validation-m2.2.md)
 - [M2.3 变更范围与阅读路径](docs/changes-m2.3.md)
 - [M2.3 验证记录](docs/validation-m2.3.md)
+- [M2.4 变更范围与阅读路径](docs/changes-m2.4.md)
+- [M2.4 验证记录](docs/validation-m2.4.md)
 
 当前背压路径优先阅读 ResourceBudget::try_frame（src/resource_budget.cpp）、ResourceLease::release（同文件）和 Session::process_buffered_input（src/server.cpp）。分别理解原子准入、最后所有者归还和 strand 恢复顺序；业务线程路径继续阅读 Dispatcher::run_worker。
 
-M2.3 已实现资源释放唤醒和数量/字节高低水位。当前退出丢弃排队任务并关闭连接，不承诺排空 ACK；执行中 Handler 必须有限时返回。尚无资源等待、半包和写超时，慢对端可能长期占用其预算；下一步 M2.4 实现限流、心跳和期限，M2.5 实现 graceful drain。已有下述 TCP 日志实验；Docker/CI 和完整 M4 压测体系尚未实现。
+M2.4 在完整背压上加入限流、心跳、空闲/半包/等待/写期限。当前退出仍丢弃排队任务并关闭连接，不承诺排空 ACK；执行中 Handler 必须有限时返回。下一步 M2.5 实现 graceful drain。已有下述 TCP 日志实验；Docker/CI 和完整 M4 压测体系尚未实现。
 
 ## 已执行的 TCP 性能实验
 
 在固定 16 连接、每连接 8 条在途、256 字节 payload 的闭环负载下，对基线、优化和重新开日志的对照组各执行三轮。三轮中位数：吞吐 24,235 → 34,823 ACK/s，P99 7.596 → 5.411 ms；对照组回到 24,356 ACK/s、7.519 ms。优化是默认关闭逐条成功日志，并在构造 JSON 前检查等级；业务失败和汇总日志保留。
 
-这些数字仅属于本次 WSL2 loopback/Release/闭环环境，不是生产容量或固定外部到达率的 SLO。原始 CSV、日志、配置、命令、哈希和对照解释见 [实验报告](docs/performance/tcp-logging-20261103.md)，正确性检查见 [验证记录](docs/performance/validation-tcp-logging.md)。这次实验没有将 M4 整体标为完成。
+这些数字属于此前提交的 WSL2 loopback/Release/闭环实验，未对 M2.4 重测，不是生产容量或固定外部到达率的 SLO。原始 CSV、日志、配置、命令、哈希和对照解释见 [实验报告](docs/performance/tcp-logging-20261103.md)，正确性检查见 [验证记录](docs/performance/validation-tcp-logging.md)。这次实验没有将 M4 整体标为完成。
+
+复现纯日志对照时，请在 [18ee824](https://github.com/JackieesLiao/realtime-gateway/commit/18ee824f2c6b81ef208750a1466db9a04c07a548) 构建候选版本再按实验报告运行；当前主分支已包含 M2.4，不能把新增策略的开销混入原日志比较。
 
 已有数据可直接重算：
 
